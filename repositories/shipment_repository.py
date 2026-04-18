@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 
@@ -20,6 +20,7 @@ class ShipmentNotFoundError(ShipmentRepositoryError):
 @dataclass(frozen=True)
 class ShipmentMutation:
     destination_city: str
+    estimated_delivery_date: date | None
     origin_city: str
     status: str
     tracking_number: str
@@ -29,6 +30,7 @@ class ShipmentMutation:
 class ShipmentRecord:
     created_at: datetime | None
     destination_city: str
+    estimated_delivery_date: date | None
     id: int
     origin_city: str
     status: str

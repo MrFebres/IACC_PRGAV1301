@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from mysql.connector.errors import OperationalError
@@ -155,6 +155,7 @@ def build_record(*, shipment_id: int = 1, tracking_number: str = "TRK-001") -> S
     return ShipmentRecord(
         created_at=timestamp,
         destination_city="Valparaiso",
+        estimated_delivery_date=date(2026, 5, 1),
         id=shipment_id,
         origin_city="Santiago",
         status="pendiente",
@@ -167,6 +168,7 @@ def build_view(repository: FakeShipmentRepository) -> ShipmentManagementView:
     view = ShipmentManagementView.__new__(ShipmentManagementView)
     view.repository = repository
     view.destination_city_var = FakeVar()
+    view.estimated_delivery_date_var = FakeVar()
     view.origin_city_var = FakeVar()
     view.status_feedback_var = FakeVar(
         "Completa el formulario y usa Recargar lista para consultar MySQL."
@@ -191,6 +193,7 @@ def test_initial_load_populates_table_on_first_render(
 
     assert repository.list_calls == 1
     assert len(view.shipment_table.rows) == 1
+    assert view.shipment_table.rows[0][1][2] == "2026-05-01"
     assert suppress_messageboxes == []
 
 
@@ -246,6 +249,7 @@ def test_on_create_persists_and_refreshes_table(
     assert repository.create_calls == [
         ShipmentMutation(
             destination_city="Valparaiso",
+            estimated_delivery_date=None,
             origin_city="Santiago",
             status="pendiente",
             tracking_number="TRK-777",
@@ -275,11 +279,35 @@ def test_table_selection_loads_form_and_enables_update(
 
     assert view._selected_shipment_id == 7
     assert view.destination_city_var.get() == "Valparaiso"
+    assert view.estimated_delivery_date_var.get() == "2026-05-01"
     assert view.origin_city_var.get() == "Santiago"
     assert view.shipment_form.status_value == "Pendiente"
     assert view.tracking_number_var.get() == "TRK-777"
     assert view.shipment_actions.update_enabled is True
     assert suppress_messageboxes == []
+
+
+def test_on_create_blocks_invalid_estimated_delivery_date(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository()
+    view = build_view(repository)
+
+    view.destination_city_var.set("Valparaiso")
+    view.estimated_delivery_date_var.set("abc")
+    view.origin_city_var.set("Santiago")
+    view.tracking_number_var.set("TRK-010")
+
+    view._on_create()
+
+    assert repository.create_calls == []
+    assert view.status_feedback_var.get() == (
+        "Fecha de entrega prevista debe usar el formato YYYY-MM-DD."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "Fecha de entrega prevista debe usar el formato YYYY-MM-DD.",
+    )
 
 
 def test_on_generate_report_shows_grouped_status_summary(
@@ -386,6 +414,7 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     updated_record = ShipmentRecord(
         created_at=existing_record.created_at,
         destination_city="Puerto Montt",
+        estimated_delivery_date=date(2026, 5, 3),
         id=5,
         origin_city="Osorno",
         status="en_transito",
@@ -403,6 +432,7 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     view._shipments_by_id = {5: existing_record}
     view._on_table_select()
     view.destination_city_var.set("Puerto Montt")
+    view.estimated_delivery_date_var.set("2026-05-03")
     view.origin_city_var.set("Osorno")
     view.status_var.set("En transito")
     view.tracking_number_var.set("TRK-999")
@@ -414,6 +444,7 @@ def test_on_update_persists_refreshes_table_and_resets_form(
             5,
             ShipmentMutation(
                 destination_city="Puerto Montt",
+                estimated_delivery_date=date(2026, 5, 3),
                 origin_city="Osorno",
                 status="en_transito",
                 tracking_number="TRK-999",
@@ -423,6 +454,7 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     assert repository.list_calls == 2
     assert view._selected_shipment_id is None
     assert view.destination_city_var.get() == ""
+    assert view.estimated_delivery_date_var.get() == ""
     assert view.origin_city_var.get() == ""
     assert view.tracking_number_var.get() == ""
     assert view.shipment_form.status_value == "Pendiente"
@@ -459,6 +491,7 @@ def test_on_update_shows_controlled_duplicate_error(
             3,
             ShipmentMutation(
                 destination_city="Valparaiso",
+                estimated_delivery_date=date(2026, 5, 1),
                 origin_city="Santiago",
                 status="pendiente",
                 tracking_number="TRK-001",

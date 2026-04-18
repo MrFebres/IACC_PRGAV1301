@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from mysql.connector import errorcode
@@ -83,6 +83,7 @@ def patch_database(
 def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = ShipmentMutation(
         destination_city="Valparaiso",
+        estimated_delivery_date=date(2026, 5, 1),
         origin_city="Santiago",
         status="pendiente",
         tracking_number="TRK-001",
@@ -93,6 +94,7 @@ def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.Mon
         fetchone_result={
             "created_at": created_at,
             "destination_city": "Valparaiso",
+            "estimated_delivery_date": date(2026, 5, 1),
             "id": 7,
             "origin_city": "Santiago",
             "status": "pendiente",
@@ -107,18 +109,21 @@ def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.Mon
     shipment = repository.create_shipment(payload)
 
     assert shipment.id == 7
+    assert shipment.estimated_delivery_date == date(2026, 5, 1)
     assert shipment.tracking_number == "TRK-001"
     assert connection.commit_calls == 1
     assert insert_cursor.execute_calls == [
         (
-            "INSERT INTO shipments (destination_city, origin_city, status, tracking_number) "
-            "VALUES (%s, %s, %s, %s)",
-            ("Valparaiso", "Santiago", "pendiente", "TRK-001"),
+            "INSERT INTO shipments "
+            "(destination_city, estimated_delivery_date, origin_city, status, tracking_number) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            ("Valparaiso", date(2026, 5, 1), "Santiago", "pendiente", "TRK-001"),
         )
     ]
     assert select_cursor.execute_calls == [
         (
-            "SELECT created_at, destination_city, id, origin_city, status, tracking_number, updated_at "
+            "SELECT created_at, destination_city, estimated_delivery_date, id, origin_city, "
+            "status, tracking_number, updated_at "
             "FROM shipments WHERE id = %s",
             (7,),
         )
@@ -131,6 +136,7 @@ def test_list_shipments_returns_records_in_query_order(monkeypatch: pytest.Monke
             {
                 "created_at": datetime(2026, 4, 18, 10, 0),
                 "destination_city": "Concepcion",
+                "estimated_delivery_date": date(2026, 4, 23),
                 "id": 2,
                 "origin_city": "Temuco",
                 "status": "en_transito",
@@ -140,6 +146,7 @@ def test_list_shipments_returns_records_in_query_order(monkeypatch: pytest.Monke
             {
                 "created_at": datetime(2026, 4, 17, 18, 0),
                 "destination_city": "Arica",
+                "estimated_delivery_date": None,
                 "id": 1,
                 "origin_city": "Iquique",
                 "status": "pendiente",
@@ -155,6 +162,8 @@ def test_list_shipments_returns_records_in_query_order(monkeypatch: pytest.Monke
     shipments = repository.list_shipments()
 
     assert tuple(shipment.id for shipment in shipments) == (2, 1)
+    assert shipments[0].estimated_delivery_date == date(2026, 4, 23)
+    assert shipments[1].estimated_delivery_date is None
     assert "ORDER BY created_at DESC, id DESC" in cursor.execute_calls[0][0]
 
 
@@ -201,6 +210,7 @@ def test_create_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.Monk
     repository = MySQLShipmentRepository()
     payload = ShipmentMutation(
         destination_city="Valparaiso",
+        estimated_delivery_date=None,
         origin_city="Santiago",
         status="pendiente",
         tracking_number="TRK-001",
@@ -213,6 +223,7 @@ def test_create_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.Monk
 def test_update_shipment_updates_and_fetches_row(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = ShipmentMutation(
         destination_city="Puerto Montt",
+        estimated_delivery_date=date(2026, 5, 3),
         origin_city="Osorno",
         status="en_transito",
         tracking_number="TRK-999",
@@ -223,6 +234,7 @@ def test_update_shipment_updates_and_fetches_row(monkeypatch: pytest.MonkeyPatch
         fetchone_result={
             "created_at": datetime(2026, 4, 18, 9, 30),
             "destination_city": "Puerto Montt",
+            "estimated_delivery_date": date(2026, 5, 3),
             "id": 7,
             "origin_city": "Osorno",
             "status": "en_transito",
@@ -238,18 +250,20 @@ def test_update_shipment_updates_and_fetches_row(monkeypatch: pytest.MonkeyPatch
 
     assert shipment.id == 7
     assert shipment.destination_city == "Puerto Montt"
+    assert shipment.estimated_delivery_date == date(2026, 5, 3)
     assert shipment.updated_at == updated_at
     assert connection.commit_calls == 1
     assert update_cursor.execute_calls == [
         (
-            "UPDATE shipments SET destination_city = %s, origin_city = %s, status = %s, "
-            "tracking_number = %s WHERE id = %s",
-            ("Puerto Montt", "Osorno", "en_transito", "TRK-999", 7),
+            "UPDATE shipments SET destination_city = %s, estimated_delivery_date = %s, "
+            "origin_city = %s, status = %s, tracking_number = %s WHERE id = %s",
+            ("Puerto Montt", date(2026, 5, 3), "Osorno", "en_transito", "TRK-999", 7),
         )
     ]
     assert select_cursor.execute_calls == [
         (
-            "SELECT created_at, destination_city, id, origin_city, status, tracking_number, updated_at "
+            "SELECT created_at, destination_city, estimated_delivery_date, id, origin_city, "
+            "status, tracking_number, updated_at "
             "FROM shipments WHERE id = %s",
             (7,),
         )
@@ -267,6 +281,7 @@ def test_update_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.Monk
     repository = MySQLShipmentRepository()
     payload = ShipmentMutation(
         destination_city="Valparaiso",
+        estimated_delivery_date=None,
         origin_city="Santiago",
         status="pendiente",
         tracking_number="TRK-001",
@@ -281,6 +296,7 @@ def test_update_shipment_raises_not_found_when_row_is_missing(
 ) -> None:
     payload = ShipmentMutation(
         destination_city="Valparaiso",
+        estimated_delivery_date=None,
         origin_city="Santiago",
         status="pendiente",
         tracking_number="TRK-404",

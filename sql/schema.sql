@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS shipments (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     delivered_at TIMESTAMP NULL DEFAULT NULL,
     destination_city VARCHAR(120) NOT NULL,
+    estimated_delivery_date DATE NULL DEFAULT NULL,
     origin_city VARCHAR(120) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'pendiente',
     tracking_number VARCHAR(32) NOT NULL,

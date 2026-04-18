@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import logging
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -46,6 +46,7 @@ class ShipmentManagementView(ttk.Frame):
         self.repository: ShipmentRepository = repository or MySQLShipmentRepository()
 
         self.destination_city_var: tk.StringVar = tk.StringVar(master=self)
+        self.estimated_delivery_date_var: tk.StringVar = tk.StringVar(master=self)
         self.origin_city_var: tk.StringVar = tk.StringVar(master=self)
         self.status_feedback_var: tk.StringVar = tk.StringVar(
             master=self,
@@ -63,6 +64,7 @@ class ShipmentManagementView(ttk.Frame):
 
     def _build_payload(self) -> ShipmentMutation | None:
         destination_city: str = self.destination_city_var.get().strip()
+        estimated_delivery_date_input: str = self.estimated_delivery_date_var.get().strip()
         origin_city: str = self.origin_city_var.get().strip()
         status_label: str = self.status_var.get().strip()
         tracking_number: str = self.tracking_number_var.get().strip()
@@ -106,8 +108,19 @@ class ShipmentManagementView(ttk.Frame):
             self._show_validation_feedback("Estado no puede superar 20 caracteres.")
             return None
 
+        estimated_delivery_date: date | None = None
+        if estimated_delivery_date_input:
+            try:
+                estimated_delivery_date = date.fromisoformat(estimated_delivery_date_input)
+            except ValueError:
+                self._show_validation_feedback(
+                    "Fecha de entrega prevista debe usar el formato YYYY-MM-DD."
+                )
+                return None
+
         return ShipmentMutation(
             destination_city=destination_city,
+            estimated_delivery_date=estimated_delivery_date,
             origin_city=origin_city,
             status=status_value,
             tracking_number=tracking_number,
@@ -131,6 +144,7 @@ class ShipmentManagementView(ttk.Frame):
         self.shipment_form = ShipmentForm(
             content_frame,
             destination_city_var=self.destination_city_var,
+            estimated_delivery_date_var=self.estimated_delivery_date_var,
             origin_city_var=self.origin_city_var,
             status_feedback_var=self.status_feedback_var,
             status_options=self._status_labels(),
@@ -170,6 +184,11 @@ class ShipmentManagementView(ttk.Frame):
         if value is None:
             return "-"
         return value.strftime("%Y-%m-%d %H:%M")
+
+    def _format_date(self, value: date | None) -> str:
+        if value is None:
+            return "-"
+        return value.isoformat()
 
     def _handle_action_error(
         self,
@@ -374,6 +393,7 @@ class ShipmentManagementView(ttk.Frame):
                 (
                     self._format_datetime(shipment.created_at),
                     shipment.destination_city,
+                    self._format_date(shipment.estimated_delivery_date),
                     shipment.origin_city,
                     self._status_label_from_value(shipment.status),
                     shipment.tracking_number,
@@ -386,6 +406,11 @@ class ShipmentManagementView(ttk.Frame):
 
     def _load_shipment_into_form(self, shipment: ShipmentRecord) -> None:
         self.destination_city_var.set(shipment.destination_city)
+        self.estimated_delivery_date_var.set(
+            ""
+            if shipment.estimated_delivery_date is None
+            else shipment.estimated_delivery_date.isoformat()
+        )
         self.origin_city_var.set(shipment.origin_city)
         self.shipment_form.configure_status_options(self._status_labels())
         self.shipment_form.set_status_value(
@@ -423,6 +448,7 @@ class ShipmentManagementView(ttk.Frame):
     def _reset_form(self) -> None:
         self._exit_edit_mode()
         self.destination_city_var.set("")
+        self.estimated_delivery_date_var.set("")
         self.origin_city_var.set("")
         self.shipment_form.configure_status_options(self._status_labels())
         self.shipment_form.set_status_value(self.STATUS_CHOICES[0][1])

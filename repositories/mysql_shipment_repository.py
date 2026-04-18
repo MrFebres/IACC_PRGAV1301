@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 import logging
 from typing import cast
 
@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 class MySQLShipmentRepository(ShipmentRepository):
     def create_shipment(self, payload: ShipmentMutation) -> ShipmentRecord:
         query: str = (
-            "INSERT INTO shipments (destination_city, origin_city, status, tracking_number) "
-            "VALUES (%s, %s, %s, %s)"
+            "INSERT INTO shipments "
+            "(destination_city, estimated_delivery_date, origin_city, status, tracking_number) "
+            "VALUES (%s, %s, %s, %s, %s)"
         )
 
         try:
@@ -36,6 +37,7 @@ class MySQLShipmentRepository(ShipmentRepository):
                         query,
                         (
                             payload.destination_city,
+                            payload.estimated_delivery_date,
                             payload.origin_city,
                             payload.status,
                             payload.tracking_number,
@@ -51,7 +53,8 @@ class MySQLShipmentRepository(ShipmentRepository):
 
     def list_shipments(self) -> tuple[ShipmentRecord, ...]:
         query: str = (
-            "SELECT created_at, destination_city, id, origin_city, status, tracking_number, updated_at "
+            "SELECT created_at, destination_city, estimated_delivery_date, id, origin_city, "
+            "status, tracking_number, updated_at "
             "FROM shipments ORDER BY created_at DESC, id DESC"
         )
 
@@ -77,8 +80,8 @@ class MySQLShipmentRepository(ShipmentRepository):
 
     def update_shipment(self, shipment_id: int, payload: ShipmentMutation) -> ShipmentRecord:
         query: str = (
-            "UPDATE shipments SET destination_city = %s, origin_city = %s, status = %s, "
-            "tracking_number = %s WHERE id = %s"
+            "UPDATE shipments SET destination_city = %s, estimated_delivery_date = %s, "
+            "origin_city = %s, status = %s, tracking_number = %s WHERE id = %s"
         )
 
         try:
@@ -88,6 +91,7 @@ class MySQLShipmentRepository(ShipmentRepository):
                         query,
                         (
                             payload.destination_city,
+                            payload.estimated_delivery_date,
                             payload.origin_city,
                             payload.status,
                             payload.tracking_number,
@@ -107,7 +111,8 @@ class MySQLShipmentRepository(ShipmentRepository):
         shipment_id: int,
     ) -> ShipmentRecord:
         query: str = (
-            "SELECT created_at, destination_city, id, origin_city, status, tracking_number, updated_at "
+            "SELECT created_at, destination_city, estimated_delivery_date, id, origin_city, "
+            "status, tracking_number, updated_at "
             "FROM shipments WHERE id = %s"
         )
 
@@ -125,6 +130,7 @@ class MySQLShipmentRepository(ShipmentRepository):
         return ShipmentRecord(
             created_at=cast(datetime | None, row["created_at"]),
             destination_city=cast(str, row["destination_city"]),
+            estimated_delivery_date=cast(date | None, row["estimated_delivery_date"]),
             id=int(row["id"]),
             origin_city=cast(str, row["origin_city"]),
             status=cast(str, row["status"]),

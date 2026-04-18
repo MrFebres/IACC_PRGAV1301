@@ -10,6 +10,7 @@ class ShipmentForm(ttk.LabelFrame):
         parent: ttk.Frame,
         *,
         destination_city_var: tk.StringVar,
+        estimated_delivery_date_var: tk.StringVar,
         origin_city_var: tk.StringVar,
         status_feedback_var: tk.StringVar,
         status_options: tuple[str, ...],
@@ -18,6 +19,7 @@ class ShipmentForm(ttk.LabelFrame):
     ) -> None:
         super().__init__(parent, padding=16, text="Datos del envio")
         self.destination_city_var = destination_city_var
+        self.estimated_delivery_date_var = estimated_delivery_date_var
         self.origin_city_var = origin_city_var
         self.status_feedback_var = status_feedback_var
         self.status_options: tuple[str, ...] = status_options
@@ -79,12 +81,25 @@ class ShipmentForm(ttk.LabelFrame):
             values=self.status_options,
         )
         self.status_combobox.grid(column=3, row=1, sticky=tk.EW)
+        ttk.Label(self, text="Fecha de entrega prevista").grid(
+            column=0,
+            row=2,
+            padx=(0, 10),
+            pady=(10, 0),
+            sticky=tk.W,
+        )
+        ttk.Entry(self, textvariable=self.estimated_delivery_date_var).grid(
+            column=1,
+            row=2,
+            pady=(10, 0),
+            sticky=tk.EW,
+        )
         ttk.Label(
             self,
             style="Body.TLabel",
             textvariable=self.status_feedback_var,
             wraplength=720,
-        ).grid(column=0, columnspan=4, pady=(14, 0), row=2, sticky=tk.W)
+        ).grid(column=0, columnspan=4, pady=(14, 0), row=3, sticky=tk.W)
 
     def configure_status_options(self, status_options: tuple[str, ...]) -> None:
         self.status_options = status_options

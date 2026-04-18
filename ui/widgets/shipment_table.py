@@ -9,6 +9,7 @@ class ShipmentTable(ttk.LabelFrame):
     COLUMNS: tuple[str, ...] = (
         "created_at",
         "destination_city",
+        "estimated_delivery_date",
         "origin_city",
         "status",
         "tracking_number",
@@ -38,12 +39,14 @@ class ShipmentTable(ttk.LabelFrame):
         )
         self.shipments_tree.heading("created_at", text="Creado")
         self.shipments_tree.heading("destination_city", text="Destino")
+        self.shipments_tree.heading("estimated_delivery_date", text="Entrega prevista")
         self.shipments_tree.heading("origin_city", text="Origen")
         self.shipments_tree.heading("status", text="Estado")
         self.shipments_tree.heading("tracking_number", text="Seguimiento")
         self.shipments_tree.heading("updated_at", text="Actualizado")
         self.shipments_tree.column("created_at", minwidth=120, width=130)
         self.shipments_tree.column("destination_city", minwidth=120, width=150)
+        self.shipments_tree.column("estimated_delivery_date", minwidth=120, width=140)
         self.shipments_tree.column("origin_city", minwidth=120, width=150)
         self.shipments_tree.column("status", minwidth=110, width=120)
         self.shipments_tree.column("tracking_number", minwidth=140, width=170)
