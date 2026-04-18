@@ -1,108 +1,77 @@
 # Sistema de Logistica
 
-Aplicacion de escritorio en Python con Tkinter para la base del sistema de logistica del proyecto. La app toma su configuracion desde un archivo `.env` en la raiz del repositorio y usa MySQL como base de datos.
+App de escritorio en Python + Tkinter para gestionar envios logisticos. Usa MySQL como base de datos y se configura mediante un archivo `.env`.
 
-## Pre requisitos
+## Pre-requisitos
 
-- Python 3.12 o superior
-- `uv` instalado para gestionar dependencias y ejecutar el proyecto
-- MySQL disponible localmente o en una instancia accesible desde tu equipo
-- Una instalacion de Python con soporte para Tkinter
+| Herramienta | Version minima | Notas                                    |
+| ----------- | -------------- | ---------------------------------------- |
+| **Python**  | 3.12           | Debe incluir soporte para Tkinter        |
+| **uv**      | —              | Gestor de dependencias recomendado       |
+| **MySQL**   | 8.x            | Local o remoto accesible desde tu equipo |
 
-## Inicio rapido
+## Configuracion del `.env`
 
-1. Clona el repositorio y entra al proyecto.
-2. Crea tu archivo `.env` a partir del ejemplo incluido.
-3. Crea la base de datos y aplica el esquema.
-4. Instala dependencias.
-5. Ejecuta la app.
-
-## Configurar `.env`
-
-Este proyecto incluye un archivo `.env.example` con las variables necesarias para la app.
-
-Primero crea tu archivo local:
+El repositorio incluye un `.env.example` con **todas** las variables que la app necesita. Copia el archivo y ajusta los valores a tu entorno:
 
 ```bash
 cp .env.example .env
 ```
 
-Despues revisa y ajusta estas variables:
+### Variables de base de datos
 
-- `MYSQL_HOST`: host del servidor MySQL
-- `MYSQL_PORT`: puerto del servidor MySQL
-- `MYSQL_DATABASE`: nombre de la base de datos
-- `MYSQL_USER`: usuario con permisos sobre la base
-- `MYSQL_PASSWORD`: password del usuario
+| Variable         | Descripcion                        | Valor por defecto |
+| ---------------- | ---------------------------------- | ----------------- |
+| `MYSQL_HOST`     | Host del servidor MySQL            | `127.0.0.1`       |
+| `MYSQL_PORT`     | Puerto del servidor                | `3306`            |
+| `MYSQL_DATABASE` | Nombre de la base de datos         | `logistics_db`    |
+| `MYSQL_USER`     | Usuario con permisos sobre la base | `root`            |
+| `MYSQL_PASSWORD` | Contrasena del usuario             | _(vacio)_         |
 
-Las variables `APP_TITLE`, `APP_WIDTH` y `APP_HEIGHT` controlan el titulo y el tamano inicial de la ventana.
+### Variables de interfaz
 
-## Por que `.env` es necesario
+| Variable     | Descripcion          | Valor por defecto      |
+| ------------ | -------------------- | ---------------------- |
+| `APP_TITLE`  | Titulo de la ventana | `Sistema de Logistica` |
+| `APP_WIDTH`  | Ancho inicial (px)   | `800`                  |
+| `APP_HEIGHT` | Alto inicial (px)    | `480`                  |
 
-La aplicacion carga automaticamente el archivo `.env` desde la raiz del proyecto. Sin esa configuracion:
-
-- la app puede iniciar con valores por defecto de interfaz,
-- pero cualquier acceso real a MySQL fallara si `MYSQL_DATABASE` o `MYSQL_USER` no estan definidos,
-- y el comportamiento local dejara de ser consistente con el entorno esperado del proyecto.
-  En otras palabras: si quieres ejecutar la app de forma local y sin problemas al trabajar con base de datos, debes tener un `.env` valido.
+> **Importante:** Sin un `.env` valido la ventana puede abrirse con valores por defecto, pero cualquier operacion contra MySQL fallara. Asegurate de tener este archivo antes de ejecutar la app.
 
 ## Preparar la base de datos
-
-Crea la base de datos y aplica el esquema SQL incluido en el repositorio.
 
 ```bash
 mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS logistics_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -u root -p logistics_db < sql/schema.sql
 ```
 
-Si cambias el nombre de la base, recuerda usar el mismo valor en `MYSQL_DATABASE` dentro de `.env`.
+Si usas un nombre de base distinto, actualiza `MYSQL_DATABASE` en tu `.env`.
 
-## Instalar dependencias
-
-La forma recomendada en este proyecto es usar `uv`:
+## Ejecutar la app en local
 
 ```bash
-uv sync
+# Instalar dependencias + iniciar
+uv sync && uv run python main.py
 ```
 
-Si no usas `uv`, tambien puedes trabajar con `venv`:
+<details>
+<summary>Alternativa con <code>venv</code></summary>
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-```
-
-## Ejecutar la aplicacion en local
-
-Comando recomendado:
-
-```bash
-uv run python main.py
-```
-
-Si quieres preparar e iniciar en una sola linea:
-
-```bash
-uv sync && uv run python main.py
-```
-
-Si estas usando `venv`, ejecuta:
-
-```bash
 python main.py
 ```
 
-## Resultado esperado
+</details>
 
-Al iniciar deberias ver la ventana `Sistema de Logistica` sin errores de dependencias. La configuracion de la interfaz se carga desde `.env`, y cualquier funcionalidad que use MySQL tomara sus credenciales desde ese mismo archivo.
-
-## Resumen minimo
-
-Si ya tienes Python, MySQL y `uv` instalados, este es el flujo minimo para correr la app localmente:
+## Resumen rapido
 
 ```bash
-cp .env.example .env
-uv sync
-uv run python main.py
+cp .env.example .env   # 1. Configurar entorno
+uv sync                # 2. Instalar dependencias
+uv run python main.py  # 3. Iniciar la app
 ```
+
+Al ejecutar deberias ver la ventana **Sistema de Logistica** sin errores.
