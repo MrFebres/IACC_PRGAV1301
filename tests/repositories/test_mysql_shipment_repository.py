@@ -10,7 +10,11 @@ from mysql.connector.errors import IntegrityError, OperationalError
 from database.connection import DatabaseConfigurationError
 import repositories.mysql_shipment_repository as shipment_module
 from repositories.mysql_shipment_repository import MySQLShipmentRepository
-from repositories.shipment_repository import DuplicateTrackingNumberError, ShipmentMutation
+from repositories.shipment_repository import (
+    DuplicateTrackingNumberError,
+    ShipmentMutation,
+    ShipmentNotFoundError,
+)
 
 
 class FakeCursor:
@@ -171,6 +175,92 @@ def test_create_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.Monk
 
     with pytest.raises(DuplicateTrackingNumberError):
         repository.create_shipment(payload)
+
+
+def test_update_shipment_updates_and_fetches_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = ShipmentMutation(
+        destination_city="Puerto Montt",
+        origin_city="Osorno",
+        status="en_transito",
+        tracking_number="TRK-999",
+    )
+    updated_at = datetime(2026, 4, 18, 12, 45)
+    update_cursor = FakeCursor()
+    select_cursor = FakeCursor(
+        fetchone_result={
+            "created_at": datetime(2026, 4, 18, 9, 30),
+            "destination_city": "Puerto Montt",
+            "id": 7,
+            "origin_city": "Osorno",
+            "status": "en_transito",
+            "tracking_number": "TRK-999",
+            "updated_at": updated_at,
+        }
+    )
+
+    connection = patch_database(monkeypatch, cursors=[update_cursor, select_cursor])
+
+    repository = MySQLShipmentRepository()
+    shipment = repository.update_shipment(7, payload)
+
+    assert shipment.id == 7
+    assert shipment.destination_city == "Puerto Montt"
+    assert shipment.updated_at == updated_at
+    assert connection.commit_calls == 1
+    assert update_cursor.execute_calls == [
+        (
+            "UPDATE shipments SET destination_city = %s, origin_city = %s, status = %s, "
+            "tracking_number = %s WHERE id = %s",
+            ("Puerto Montt", "Osorno", "en_transito", "TRK-999", 7),
+        )
+    ]
+    assert select_cursor.execute_calls == [
+        (
+            "SELECT created_at, destination_city, id, origin_city, status, tracking_number, updated_at "
+            "FROM shipments WHERE id = %s",
+            (7,),
+        )
+    ]
+
+
+def test_update_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    duplicate_error = IntegrityError(
+        msg="Duplicate entry 'TRK-001' for key 'idx_shipments_tracking_number'",
+        errno=errorcode.ER_DUP_ENTRY,
+    )
+    update_cursor = FakeCursor(execute_error=duplicate_error)
+    patch_database(monkeypatch, cursors=[update_cursor])
+
+    repository = MySQLShipmentRepository()
+    payload = ShipmentMutation(
+        destination_city="Valparaiso",
+        origin_city="Santiago",
+        status="pendiente",
+        tracking_number="TRK-001",
+    )
+
+    with pytest.raises(DuplicateTrackingNumberError):
+        repository.update_shipment(4, payload)
+
+
+def test_update_shipment_raises_not_found_when_row_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = ShipmentMutation(
+        destination_city="Valparaiso",
+        origin_city="Santiago",
+        status="pendiente",
+        tracking_number="TRK-404",
+    )
+    update_cursor = FakeCursor()
+    select_cursor = FakeCursor(fetchone_result=None)
+
+    patch_database(monkeypatch, cursors=[update_cursor, select_cursor])
+
+    repository = MySQLShipmentRepository()
+
+    with pytest.raises(ShipmentNotFoundError):
+        repository.update_shipment(404, payload)
 
 
 def test_list_shipments_propagates_missing_database_configuration(
