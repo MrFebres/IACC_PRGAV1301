@@ -12,6 +12,7 @@ from repositories import (
     DuplicateTrackingNumberError,
     MySQLShipmentRepository,
     ShipmentMutation,
+    ShipmentNotFoundError,
     ShipmentRecord,
     ShipmentRepository,
 )
@@ -39,6 +40,8 @@ class ShipmentManagementView(ttk.Frame):
         repository: ShipmentRepository | None = None,
     ) -> None:
         super().__init__(parent)
+        self._selected_shipment_id: int | None = None
+        self._shipments_by_id: dict[int, ShipmentRecord] = {}
         self.repository: ShipmentRepository = repository or MySQLShipmentRepository()
 
         self.destination_city_var: tk.StringVar = tk.StringVar(master=self)
@@ -140,11 +143,26 @@ class ShipmentManagementView(ttk.Frame):
             on_clear=self._on_clear,
             on_create=self._on_create,
             on_reload=self._on_reload,
+            on_update=self._on_update,
         )
         self.shipment_actions.grid(column=0, row=1, sticky=tk.EW, pady=(12, 12))
 
-        self.shipment_table = ShipmentTable(content_frame)
+        self.shipment_table = ShipmentTable(
+            content_frame,
+            on_select=self._on_table_select,
+        )
         self.shipment_table.grid(column=0, row=2, sticky=tk.NSEW)
+
+    def _enter_edit_mode(self, shipment: ShipmentRecord) -> None:
+        self._selected_shipment_id = shipment.id
+        self.shipment_actions.set_update_enabled(True)
+        self.status_feedback_var.set(
+            f"Editando el envio {shipment.tracking_number}. Actualiza los datos y guarda los cambios."
+        )
+
+    def _exit_edit_mode(self) -> None:
+        self._selected_shipment_id = None
+        self.shipment_actions.set_update_enabled(False)
 
     def _format_datetime(self, value: datetime | None) -> str:
         if value is None:
@@ -179,6 +197,18 @@ class ShipmentManagementView(ttk.Frame):
                     message="Ya existe un envio con ese numero de seguimiento.",
                     parent=self,
                     title="Seguimiento duplicado",
+                )
+            return
+
+        if isinstance(exc, ShipmentNotFoundError):
+            self.status_feedback_var.set(
+                "El envio seleccionado ya no existe. Recarga la lista e intenta nuevamente."
+            )
+            if show_dialog:
+                messagebox.showwarning(
+                    message="El envio seleccionado ya no existe. Recarga la lista antes de actualizar.",
+                    parent=self,
+                    title="Envio no disponible",
                 )
             return
 
@@ -251,6 +281,60 @@ class ShipmentManagementView(ttk.Frame):
     def _on_reload(self) -> None:
         self._reload_shipments(show_dialog_on_error=True)
 
+    def _on_table_select(self, _event: tk.Event[tk.Misc] | None = None) -> None:
+        selected_shipment_id = self.shipment_table.get_selected_shipment_id()
+        if selected_shipment_id is None:
+            self._exit_edit_mode()
+            return
+
+        shipment = self._shipments_by_id.get(selected_shipment_id)
+        if shipment is None:
+            self._exit_edit_mode()
+            return
+
+        self._load_shipment_into_form(shipment)
+        self._enter_edit_mode(shipment)
+
+    def _on_update(self) -> None:
+        if self._selected_shipment_id is None:
+            self._show_validation_feedback(
+                "Selecciona un envio de la lista antes de actualizar."
+            )
+            return
+
+        payload = self._build_payload()
+        if payload is None:
+            return
+
+        try:
+            shipment = self.repository.update_shipment(self._selected_shipment_id, payload)
+            if self._reload_shipments(show_dialog_on_error=True):
+                self._reset_form()
+                self.status_feedback_var.set(
+                    f"Se actualizo el envio {shipment.tracking_number} correctamente."
+                )
+                messagebox.showinfo(
+                    message="El envio fue actualizado y la lista se recargo correctamente.",
+                    parent=self,
+                    title="Envio actualizado",
+                )
+                return
+
+            self.status_feedback_var.set(
+                "El envio se actualizo, pero no fue posible recargar la lista automaticamente."
+            )
+            messagebox.showwarning(
+                message="El envio fue actualizado, pero la lista no pudo recargarse. Intenta usar Recargar lista.",
+                parent=self,
+                title="Recarga pendiente",
+            )
+        except Exception as exc:
+            self._handle_action_error(
+                exc,
+                action_label="shipment update",
+                show_dialog=True,
+            )
+
     def _populate_table(self, shipments: tuple[ShipmentRecord, ...]) -> None:
         rows: tuple[tuple[int, tuple[str, ...]], ...] = tuple(
             (
@@ -268,6 +352,16 @@ class ShipmentManagementView(ttk.Frame):
         )
         self.shipment_table.load_rows(rows)
 
+    def _load_shipment_into_form(self, shipment: ShipmentRecord) -> None:
+        self.destination_city_var.set(shipment.destination_city)
+        self.origin_city_var.set(shipment.origin_city)
+        self.shipment_form.configure_status_options(self._status_labels())
+        self.shipment_form.set_status_value(
+            self._status_label_from_value(shipment.status),
+            extend_options=True,
+        )
+        self.tracking_number_var.set(shipment.tracking_number)
+
     def _reload_shipments(self, *, show_dialog_on_error: bool) -> bool:
         try:
             shipments = self.repository.list_shipments()
@@ -279,7 +373,10 @@ class ShipmentManagementView(ttk.Frame):
             )
             return False
 
+        self._shipments_by_id = {shipment.id: shipment for shipment in shipments}
         self._populate_table(shipments)
+        self._exit_edit_mode()
+        self.shipment_table.clear_selection()
         if shipments:
             self.status_feedback_var.set(
                 f"Se cargaron {len(shipments)} envios desde MySQL."
@@ -292,6 +389,7 @@ class ShipmentManagementView(ttk.Frame):
         return True
 
     def _reset_form(self) -> None:
+        self._exit_edit_mode()
         self.destination_city_var.set("")
         self.origin_city_var.set("")
         self.shipment_form.configure_status_options(self._status_labels())

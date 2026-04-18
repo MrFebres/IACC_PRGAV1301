@@ -45,13 +45,26 @@ class FakeShipmentForm:
         self.status_value = status_label
 
 
+class FakeShipmentActions:
+    def __init__(self) -> None:
+        self.update_enabled: bool = False
+
+    def set_update_enabled(self, enabled: bool) -> None:
+        self.update_enabled = enabled
+
+
 class FakeShipmentTable:
     def __init__(self) -> None:
         self.rows: tuple[tuple[int, tuple[str, ...]], ...] = ()
+        self.selected_shipment_id: int | None = None
         self.selection_cleared: bool = False
 
     def clear_selection(self) -> None:
         self.selection_cleared = True
+        self.selected_shipment_id = None
+
+    def get_selected_shipment_id(self) -> int | None:
+        return self.selected_shipment_id
 
     def load_rows(self, rows: tuple[tuple[int, tuple[str, ...]], ...]) -> None:
         self.rows = rows
@@ -65,6 +78,8 @@ class FakeShipmentRepository:
         create_result: ShipmentRecord | None = None,
         list_error: Exception | None = None,
         list_result: tuple[ShipmentRecord, ...] = (),
+        update_error: Exception | None = None,
+        update_result: ShipmentRecord | None = None,
     ) -> None:
         self.create_calls: list[ShipmentMutation] = []
         self.create_error = create_error
@@ -72,6 +87,9 @@ class FakeShipmentRepository:
         self.list_calls: int = 0
         self.list_error = list_error
         self.list_result = list_result
+        self.update_calls: list[tuple[int, ShipmentMutation]] = []
+        self.update_error = update_error
+        self.update_result = update_result
 
     def create_shipment(self, payload: ShipmentMutation) -> ShipmentRecord:
         self.create_calls.append(payload)
@@ -91,7 +109,12 @@ class FakeShipmentRepository:
         raise AssertionError("Summary is out of scope for this slice")
 
     def update_shipment(self, shipment_id: int, payload: ShipmentMutation) -> ShipmentRecord:
-        raise AssertionError(f"Update is out of scope for this slice: {shipment_id} {payload}")
+        self.update_calls.append((shipment_id, payload))
+        if self.update_error is not None:
+            raise self.update_error
+        if self.update_result is None:
+            raise AssertionError("update_result must be provided for successful updates")
+        return self.update_result
 
 
 @pytest.fixture
@@ -142,6 +165,9 @@ def build_view(repository: FakeShipmentRepository) -> ShipmentManagementView:
     )
     view.status_var = FakeVar(ShipmentManagementView.STATUS_CHOICES[0][1])
     view.tracking_number_var = FakeVar()
+    view._selected_shipment_id = None
+    view._shipments_by_id = {}
+    view.shipment_actions = FakeShipmentActions()
     view.shipment_form = FakeShipmentForm()
     view.shipment_table = FakeShipmentTable()
     return view
@@ -224,6 +250,140 @@ def test_on_create_persists_and_refreshes_table(
     assert suppress_messageboxes[-1] == (
         "info",
         "El envio fue registrado y la lista se actualizo correctamente.",
+    )
+
+
+def test_table_selection_loads_form_and_enables_update(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    selected_record = build_record(shipment_id=7, tracking_number="TRK-777")
+    repository = FakeShipmentRepository(list_result=(selected_record,))
+    view = build_view(repository)
+
+    view._reload_shipments(show_dialog_on_error=False)
+    view.shipment_table.selected_shipment_id = 7
+
+    view._on_table_select()
+
+    assert view._selected_shipment_id == 7
+    assert view.destination_city_var.get() == "Valparaiso"
+    assert view.origin_city_var.get() == "Santiago"
+    assert view.shipment_form.status_value == "Pendiente"
+    assert view.tracking_number_var.get() == "TRK-777"
+    assert view.shipment_actions.update_enabled is True
+    assert suppress_messageboxes == []
+
+
+def test_on_update_requires_selection_before_saving(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository()
+    view = build_view(repository)
+
+    view._on_update()
+
+    assert repository.update_calls == []
+    assert view.status_feedback_var.get() == (
+        "Selecciona un envio de la lista antes de actualizar."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "Selecciona un envio de la lista antes de actualizar.",
+    )
+
+
+def test_on_update_persists_refreshes_table_and_resets_form(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    existing_record = build_record(shipment_id=5, tracking_number="TRK-005")
+    updated_record = ShipmentRecord(
+        created_at=existing_record.created_at,
+        destination_city="Puerto Montt",
+        id=5,
+        origin_city="Osorno",
+        status="en_transito",
+        tracking_number="TRK-999",
+        updated_at=existing_record.updated_at,
+    )
+    repository = FakeShipmentRepository(
+        list_result=(updated_record,),
+        update_result=updated_record,
+    )
+    view = build_view(repository)
+
+    view._reload_shipments(show_dialog_on_error=False)
+    view.shipment_table.selected_shipment_id = 5
+    view._shipments_by_id = {5: existing_record}
+    view._on_table_select()
+    view.destination_city_var.set("Puerto Montt")
+    view.origin_city_var.set("Osorno")
+    view.status_var.set("En transito")
+    view.tracking_number_var.set("TRK-999")
+
+    view._on_update()
+
+    assert repository.update_calls == [
+        (
+            5,
+            ShipmentMutation(
+                destination_city="Puerto Montt",
+                origin_city="Osorno",
+                status="en_transito",
+                tracking_number="TRK-999",
+            ),
+        )
+    ]
+    assert repository.list_calls == 2
+    assert view._selected_shipment_id is None
+    assert view.destination_city_var.get() == ""
+    assert view.origin_city_var.get() == ""
+    assert view.tracking_number_var.get() == ""
+    assert view.shipment_form.status_value == "Pendiente"
+    assert view.shipment_actions.update_enabled is False
+    assert view.shipment_table.selection_cleared is True
+    assert view.status_feedback_var.get() == "Se actualizo el envio TRK-999 correctamente."
+    assert suppress_messageboxes[-1] == (
+        "info",
+        "El envio fue actualizado y la lista se recargo correctamente.",
+    )
+
+
+def test_on_update_shows_controlled_duplicate_error(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    existing_record = build_record(shipment_id=3, tracking_number="TRK-003")
+    repository = FakeShipmentRepository(
+        list_result=(existing_record,),
+        update_error=DuplicateTrackingNumberError("duplicate tracking number"),
+    )
+    view = build_view(repository)
+
+    view._reload_shipments(show_dialog_on_error=False)
+    view.shipment_table.selected_shipment_id = 3
+    view._on_table_select()
+    view.destination_city_var.set("Valparaiso")
+    view.origin_city_var.set("Santiago")
+    view.tracking_number_var.set("TRK-001")
+
+    view._on_update()
+
+    assert repository.update_calls == [
+        (
+            3,
+            ShipmentMutation(
+                destination_city="Valparaiso",
+                origin_city="Santiago",
+                status="pendiente",
+                tracking_number="TRK-001",
+            ),
+        )
+    ]
+    assert view.status_feedback_var.get() == (
+        "El numero de seguimiento ya existe. Corrige el valor e intenta otra vez."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "Ya existe un envio con ese numero de seguimiento.",
     )
 
 
