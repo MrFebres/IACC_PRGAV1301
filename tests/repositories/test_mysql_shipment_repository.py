@@ -14,6 +14,7 @@ from repositories.shipment_repository import (
     DuplicateTrackingNumberError,
     ShipmentMutation,
     ShipmentNotFoundError,
+    ShipmentSummary,
 )
 
 
@@ -155,6 +156,38 @@ def test_list_shipments_returns_records_in_query_order(monkeypatch: pytest.Monke
 
     assert tuple(shipment.id for shipment in shipments) == (2, 1)
     assert "ORDER BY created_at DESC, id DESC" in cursor.execute_calls[0][0]
+
+
+def test_summarize_shipments_returns_grouped_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = FakeCursor(
+        fetchall_result=[
+            {
+                "shipment_count": 1,
+                "status": "en_transito",
+            },
+            {
+                "shipment_count": 3,
+                "status": "pendiente",
+            },
+        ]
+    )
+
+    patch_database(monkeypatch, cursors=[cursor])
+
+    repository = MySQLShipmentRepository()
+    summary = repository.summarize_shipments()
+
+    assert summary == (
+        ShipmentSummary(shipment_count=1, status="en_transito"),
+        ShipmentSummary(shipment_count=3, status="pendiente"),
+    )
+    assert cursor.execute_calls == [
+        (
+            "SELECT COUNT(*) AS shipment_count, status FROM shipments "
+            "GROUP BY status ORDER BY status ASC",
+            None,
+        )
+    ]
 
 
 def test_create_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.MonkeyPatch) -> None:

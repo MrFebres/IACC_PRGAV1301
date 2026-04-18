@@ -78,6 +78,8 @@ class FakeShipmentRepository:
         create_result: ShipmentRecord | None = None,
         list_error: Exception | None = None,
         list_result: tuple[ShipmentRecord, ...] = (),
+        summarize_error: Exception | None = None,
+        summarize_result: tuple[ShipmentSummary, ...] = (),
         update_error: Exception | None = None,
         update_result: ShipmentRecord | None = None,
     ) -> None:
@@ -87,6 +89,9 @@ class FakeShipmentRepository:
         self.list_calls: int = 0
         self.list_error = list_error
         self.list_result = list_result
+        self.summarize_calls: int = 0
+        self.summarize_error = summarize_error
+        self.summarize_result = summarize_result
         self.update_calls: list[tuple[int, ShipmentMutation]] = []
         self.update_error = update_error
         self.update_result = update_result
@@ -106,7 +111,10 @@ class FakeShipmentRepository:
         return self.list_result
 
     def summarize_shipments(self) -> tuple[ShipmentSummary, ...]:
-        raise AssertionError("Summary is out of scope for this slice")
+        self.summarize_calls += 1
+        if self.summarize_error is not None:
+            raise self.summarize_error
+        return self.summarize_result
 
     def update_shipment(self, shipment_id: int, payload: ShipmentMutation) -> ShipmentRecord:
         self.update_calls.append((shipment_id, payload))
@@ -272,6 +280,85 @@ def test_table_selection_loads_form_and_enables_update(
     assert view.tracking_number_var.get() == "TRK-777"
     assert view.shipment_actions.update_enabled is True
     assert suppress_messageboxes == []
+
+
+def test_on_generate_report_shows_grouped_status_summary(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        summarize_result=(
+            ShipmentSummary(shipment_count=2, status="pendiente"),
+            ShipmentSummary(shipment_count=1, status="estado_desconocido"),
+        )
+    )
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == "Se genero el reporte de estados de envios."
+    assert suppress_messageboxes[-1] == (
+        "info",
+        "Resumen de envios por estado:\n- Pendiente: 2\n- Estado Desconocido: 1",
+    )
+
+
+def test_on_generate_report_warns_when_summary_is_empty(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(summarize_result=())
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == (
+        "No hay datos para generar el reporte de estados. Crea envios o recarga la lista."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "No hay envios registrados para resumir por estado.",
+    )
+
+
+def test_on_generate_report_surfaces_database_failures(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        summarize_error=OperationalError(msg="MySQL unavailable", errno=2003),
+    )
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == (
+        "No fue posible completar la operacion en MySQL. Verifica la conexion y vuelve a intentar."
+    )
+    assert suppress_messageboxes[-1] == (
+        "error",
+        "No fue posible conectar con MySQL o completar la operacion solicitada.",
+    )
+
+
+def test_on_generate_report_surfaces_missing_configuration_guidance(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        summarize_error=DatabaseConfigurationError("missing settings"),
+    )
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == (
+        "Falta configuracion de MySQL. Revisa MYSQL_DATABASE y MYSQL_USER en .env."
+    )
+    assert suppress_messageboxes[-1] == (
+        "error",
+        "Configura MYSQL_DATABASE y MYSQL_USER en tu archivo .env antes de usar la gestion de envios.",
+    )
 
 
 def test_on_update_requires_selection_before_saving(

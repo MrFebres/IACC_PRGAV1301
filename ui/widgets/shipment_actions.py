@@ -12,16 +12,18 @@ class ShipmentActions(ttk.Frame):
         *,
         on_clear: Callable[[], None],
         on_create: Callable[[], None],
+        on_generate_report: Callable[[], None],
         on_update: Callable[[], None],
         on_reload: Callable[[], None],
     ) -> None:
         super().__init__(parent)
         self.on_clear = on_clear
         self.on_create = on_create
+        self.on_generate_report = on_generate_report
         self.on_reload = on_reload
         self.on_update = on_update
 
-        self.columnconfigure(4, weight=1)
+        self.columnconfigure(5, weight=1)
         self._create_widgets()
 
     def _create_widgets(self) -> None:
@@ -51,6 +53,12 @@ class ShipmentActions(ttk.Frame):
         )
         ttk.Button(self, command=self.on_reload, text="Recargar lista").grid(
             column=3,
+            row=0,
+            padx=(0, 8),
+            sticky=tk.EW,
+        )
+        ttk.Button(self, command=self.on_generate_report, text="Generar reporte").grid(
+            column=4,
             row=0,
             sticky=tk.EW,
         )

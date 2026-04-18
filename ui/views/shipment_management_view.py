@@ -15,6 +15,7 @@ from repositories import (
     ShipmentNotFoundError,
     ShipmentRecord,
     ShipmentRepository,
+    ShipmentSummary,
 )
 from ui.widgets import ShipmentActions, ShipmentForm, ShipmentTable
 
@@ -142,6 +143,7 @@ class ShipmentManagementView(ttk.Frame):
             content_frame,
             on_clear=self._on_clear,
             on_create=self._on_create,
+            on_generate_report=self._on_generate_report,
             on_reload=self._on_reload,
             on_update=self._on_update,
         )
@@ -281,6 +283,36 @@ class ShipmentManagementView(ttk.Frame):
     def _on_reload(self) -> None:
         self._reload_shipments(show_dialog_on_error=True)
 
+    def _on_generate_report(self) -> None:
+        try:
+            summary = self.repository.summarize_shipments()
+        except Exception as exc:
+            self._handle_action_error(
+                exc,
+                action_label="shipment report generation",
+                show_dialog=True,
+            )
+            return
+
+        if not summary:
+            self.status_feedback_var.set(
+                "No hay datos para generar el reporte de estados. Crea envios o recarga la lista."
+            )
+            messagebox.showwarning(
+                message="No hay envios registrados para resumir por estado.",
+                parent=self,
+                title="Reporte sin datos",
+            )
+            return
+
+        report_message = self._format_shipment_report(summary)
+        self.status_feedback_var.set("Se genero el reporte de estados de envios.")
+        messagebox.showinfo(
+            message=report_message,
+            parent=self,
+            title="Reporte de envios",
+        )
+
     def _on_table_select(self, _event: tk.Event[tk.Misc] | None = None) -> None:
         selected_shipment_id = self.shipment_table.get_selected_shipment_id()
         if selected_shipment_id is None:
@@ -404,6 +436,16 @@ class ShipmentManagementView(ttk.Frame):
             parent=self,
             title="Validacion de envios",
         )
+
+    def _format_shipment_report(
+        self,
+        summary: tuple[ShipmentSummary, ...],
+    ) -> str:
+        lines: tuple[str, ...] = tuple(
+            f"- {self._status_label_from_value(item.status)}: {item.shipment_count}"
+            for item in summary
+        )
+        return "Resumen de envios por estado:\n" + "\n".join(lines)
 
     @classmethod
     def _status_label_from_value(cls, status: str) -> str:
