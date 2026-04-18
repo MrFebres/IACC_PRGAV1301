@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 import pytest
 from mysql.connector import errorcode
-from mysql.connector.errors import IntegrityError, OperationalError
+from mysql.connector.errors import IntegrityError, OperationalError, ProgrammingError
 
 from database.connection import DatabaseConfigurationError
 import repositories.mysql_shipment_repository as shipment_module
@@ -14,6 +14,7 @@ from repositories.shipment_repository import (
     DuplicateTrackingNumberError,
     ShipmentMutation,
     ShipmentNotFoundError,
+    ShipmentSchemaCompatibilityError,
     ShipmentSummary,
 )
 
@@ -82,6 +83,14 @@ def patch_database(
     return connection
 
 
+def compatible_schema_cursor() -> FakeCursor:
+    return FakeCursor(fetchone_result={"column_exists": 1})
+
+
+def legacy_schema_cursor() -> FakeCursor:
+    return FakeCursor(fetchone_result=None)
+
+
 def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = ShipmentMutation(
         destination_city="Valparaiso",
@@ -91,6 +100,7 @@ def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.Mon
         tracking_number="TRK-001",
     )
     created_at = datetime(2026, 4, 18, 9, 30)
+    schema_cursor = compatible_schema_cursor()
     insert_cursor = FakeCursor(lastrowid=7)
     select_cursor = FakeCursor(
         fetchone_result={
@@ -105,7 +115,7 @@ def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.Mon
         }
     )
 
-    connection = patch_database(monkeypatch, cursors=[insert_cursor, select_cursor])
+    connection = patch_database(monkeypatch, cursors=[schema_cursor, insert_cursor, select_cursor])
 
     repository = MySQLShipmentRepository()
     shipment = repository.create_shipment(payload)
@@ -114,6 +124,12 @@ def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.Mon
     assert shipment.estimated_delivery_date == date(2026, 5, 1)
     assert shipment.tracking_number == "TRK-001"
     assert connection.commit_calls == 1
+    assert schema_cursor.execute_calls == [
+        (
+            repository.ESTIMATED_DELIVERY_DATE_COMPATIBILITY_QUERY,
+            (repository.SHIPMENTS_TABLE_NAME, repository.ESTIMATED_DELIVERY_DATE_COLUMN_NAME),
+        )
+    ]
     assert insert_cursor.execute_calls == [
         (
             "INSERT INTO shipments "
@@ -133,6 +149,7 @@ def test_create_shipment_inserts_and_fetches_created_row(monkeypatch: pytest.Mon
 
 
 def test_list_shipments_returns_records_in_query_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    schema_cursor = compatible_schema_cursor()
     cursor = FakeCursor(
         fetchall_result=[
             {
@@ -158,7 +175,7 @@ def test_list_shipments_returns_records_in_query_order(monkeypatch: pytest.Monke
         ]
     )
 
-    patch_database(monkeypatch, cursors=[cursor])
+    patch_database(monkeypatch, cursors=[schema_cursor, cursor])
 
     repository = MySQLShipmentRepository()
     shipments = repository.list_shipments()
@@ -166,7 +183,124 @@ def test_list_shipments_returns_records_in_query_order(monkeypatch: pytest.Monke
     assert tuple(shipment.id for shipment in shipments) == (2, 1)
     assert shipments[0].estimated_delivery_date == date(2026, 4, 23)
     assert shipments[1].estimated_delivery_date is None
+    assert schema_cursor.execute_calls == [
+        (
+            repository.ESTIMATED_DELIVERY_DATE_COMPATIBILITY_QUERY,
+            (repository.SHIPMENTS_TABLE_NAME, repository.ESTIMATED_DELIVERY_DATE_COLUMN_NAME),
+        )
+    ]
     assert "ORDER BY created_at DESC, id DESC" in cursor.execute_calls[0][0]
+
+
+def test_list_shipments_repairs_legacy_schema_before_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_cursor = legacy_schema_cursor()
+    alter_cursor = FakeCursor()
+    list_cursor = FakeCursor(
+        fetchall_result=[
+            {
+                "created_at": datetime(2026, 4, 18, 10, 0),
+                "destination_city": "Concepcion",
+                "estimated_delivery_date": None,
+                "id": 2,
+                "origin_city": "Temuco",
+                "status": "en_transito",
+                "tracking_number": "TRK-002",
+                "updated_at": datetime(2026, 4, 18, 10, 5),
+            }
+        ]
+    )
+
+    connection = patch_database(
+        monkeypatch,
+        cursors=[schema_cursor, alter_cursor, list_cursor],
+    )
+
+    repository = MySQLShipmentRepository()
+    shipments = repository.list_shipments()
+
+    assert len(shipments) == 1
+    assert shipments[0].estimated_delivery_date is None
+    assert connection.commit_calls == 1
+    assert alter_cursor.execute_calls == [
+        (repository.ESTIMATED_DELIVERY_DATE_REMEDIATION_SQL, None)
+    ]
+    assert list_cursor.execute_calls == [
+        (
+            "SELECT created_at, destination_city, estimated_delivery_date, id, origin_city, "
+            "status, tracking_number, updated_at "
+            "FROM shipments ORDER BY created_at DESC, id DESC",
+            None,
+        )
+    ]
+
+
+def test_list_shipments_treats_duplicate_column_race_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_cursor = legacy_schema_cursor()
+    alter_cursor = FakeCursor(
+        execute_error=ProgrammingError(
+            msg="Duplicate column name 'estimated_delivery_date'",
+            errno=errorcode.ER_DUP_FIELDNAME,
+        )
+    )
+    post_race_schema_cursor = compatible_schema_cursor()
+    list_cursor = FakeCursor(fetchall_result=[])
+
+    patch_database(
+        monkeypatch,
+        cursors=[schema_cursor, alter_cursor, post_race_schema_cursor, list_cursor],
+    )
+
+    repository = MySQLShipmentRepository()
+
+    assert repository.list_shipments() == ()
+    assert post_race_schema_cursor.execute_calls == [
+        (
+            repository.ESTIMATED_DELIVERY_DATE_COMPATIBILITY_QUERY,
+            (repository.SHIPMENTS_TABLE_NAME, repository.ESTIMATED_DELIVERY_DATE_COLUMN_NAME),
+        )
+    ]
+
+
+def test_list_shipments_raises_schema_compatibility_error_when_repair_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_cursor = legacy_schema_cursor()
+    alter_cursor = FakeCursor(
+        execute_error=OperationalError(msg="ALTER denied", errno=1142)
+    )
+
+    connection = patch_database(monkeypatch, cursors=[schema_cursor, alter_cursor])
+
+    repository = MySQLShipmentRepository()
+
+    with pytest.raises(ShipmentSchemaCompatibilityError) as exc_info:
+        repository.list_shipments()
+
+    assert connection.commit_calls == 0
+    assert repository.ESTIMATED_DELIVERY_DATE_REMEDIATION_SQL in str(exc_info.value)
+
+
+def test_list_shipments_caches_schema_compatibility_after_first_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_cursor = compatible_schema_cursor()
+    first_list_cursor = FakeCursor(fetchall_result=[])
+    second_list_cursor = FakeCursor(fetchall_result=[])
+
+    patch_database(
+        monkeypatch,
+        cursors=[schema_cursor, first_list_cursor, second_list_cursor],
+    )
+
+    repository = MySQLShipmentRepository()
+
+    assert repository.list_shipments() == ()
+    assert repository.list_shipments() == ()
+    assert len(schema_cursor.execute_calls) == 1
 
 
 def test_summarize_shipments_returns_grouped_counts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,7 +341,7 @@ def test_create_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.Monk
         errno=errorcode.ER_DUP_ENTRY,
     )
     insert_cursor = FakeCursor(execute_error=duplicate_error)
-    patch_database(monkeypatch, cursors=[insert_cursor])
+    patch_database(monkeypatch, cursors=[compatible_schema_cursor(), insert_cursor])
 
     repository = MySQLShipmentRepository()
     payload = ShipmentMutation(
@@ -231,6 +365,7 @@ def test_update_shipment_updates_and_fetches_row(monkeypatch: pytest.MonkeyPatch
         tracking_number="TRK-999",
     )
     updated_at = datetime(2026, 4, 18, 12, 45)
+    schema_cursor = compatible_schema_cursor()
     update_cursor = FakeCursor()
     select_cursor = FakeCursor(
         fetchone_result={
@@ -245,7 +380,10 @@ def test_update_shipment_updates_and_fetches_row(monkeypatch: pytest.MonkeyPatch
         }
     )
 
-    connection = patch_database(monkeypatch, cursors=[update_cursor, select_cursor])
+    connection = patch_database(
+        monkeypatch,
+        cursors=[schema_cursor, update_cursor, select_cursor],
+    )
 
     repository = MySQLShipmentRepository()
     shipment = repository.update_shipment(7, payload)
@@ -255,6 +393,12 @@ def test_update_shipment_updates_and_fetches_row(monkeypatch: pytest.MonkeyPatch
     assert shipment.estimated_delivery_date == date(2026, 5, 3)
     assert shipment.updated_at == updated_at
     assert connection.commit_calls == 1
+    assert schema_cursor.execute_calls == [
+        (
+            repository.ESTIMATED_DELIVERY_DATE_COMPATIBILITY_QUERY,
+            (repository.SHIPMENTS_TABLE_NAME, repository.ESTIMATED_DELIVERY_DATE_COLUMN_NAME),
+        )
+    ]
     assert update_cursor.execute_calls == [
         (
             "UPDATE shipments SET destination_city = %s, estimated_delivery_date = %s, "
@@ -278,7 +422,7 @@ def test_update_shipment_maps_duplicate_tracking_errors(monkeypatch: pytest.Monk
         errno=errorcode.ER_DUP_ENTRY,
     )
     update_cursor = FakeCursor(execute_error=duplicate_error)
-    patch_database(monkeypatch, cursors=[update_cursor])
+    patch_database(monkeypatch, cursors=[compatible_schema_cursor(), update_cursor])
 
     repository = MySQLShipmentRepository()
     payload = ShipmentMutation(
@@ -303,10 +447,11 @@ def test_update_shipment_raises_not_found_when_row_is_missing(
         status="pendiente",
         tracking_number="TRK-404",
     )
+    schema_cursor = compatible_schema_cursor()
     update_cursor = FakeCursor()
     select_cursor = FakeCursor(fetchone_result=None)
 
-    patch_database(monkeypatch, cursors=[update_cursor, select_cursor])
+    patch_database(monkeypatch, cursors=[schema_cursor, update_cursor, select_cursor])
 
     repository = MySQLShipmentRepository()
 

@@ -15,6 +15,7 @@ from repositories.shipment_repository import (
     ShipmentNotFoundError,
     ShipmentRecord,
     ShipmentRepository,
+    ShipmentSchemaCompatibilityError,
     ShipmentSummary,
 )
 
@@ -23,6 +24,21 @@ logger = logging.getLogger(__name__)
 
 
 class MySQLShipmentRepository(ShipmentRepository):
+    ESTIMATED_DELIVERY_DATE_COLUMN_NAME: str = "estimated_delivery_date"
+    ESTIMATED_DELIVERY_DATE_COMPATIBILITY_QUERY: str = (
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s "
+        "LIMIT 1"
+    )
+    ESTIMATED_DELIVERY_DATE_REMEDIATION_SQL: str = (
+        "ALTER TABLE shipments ADD COLUMN estimated_delivery_date "
+        "DATE NULL DEFAULT NULL AFTER destination_city"
+    )
+    SHIPMENTS_TABLE_NAME: str = "shipments"
+
+    def __init__(self) -> None:
+        self._estimated_delivery_date_schema_verified: bool = False
+
     def create_shipment(self, payload: ShipmentMutation) -> ShipmentRecord:
         query: str = (
             "INSERT INTO shipments "
@@ -32,6 +48,7 @@ class MySQLShipmentRepository(ShipmentRepository):
 
         try:
             with get_connection() as connection:
+                self._ensure_estimated_delivery_date_schema(connection)
                 with get_cursor(connection) as cursor:
                     cursor.execute(
                         query,
@@ -59,10 +76,12 @@ class MySQLShipmentRepository(ShipmentRepository):
         )
 
         try:
-            with get_connection() as connection, get_cursor(connection, dictionary=True) as cursor:
-                cursor.execute(query)
-                rows = cursor.fetchall()
-                return tuple(self._map_shipment_record(row) for row in rows)
+            with get_connection() as connection:
+                self._ensure_estimated_delivery_date_schema(connection)
+                with get_cursor(connection, dictionary=True) as cursor:
+                    cursor.execute(query)
+                    rows = cursor.fetchall()
+                    return tuple(self._map_shipment_record(row) for row in rows)
         except Error:
             logger.exception("Unexpected database error listing shipments")
             raise
@@ -86,6 +105,7 @@ class MySQLShipmentRepository(ShipmentRepository):
 
         try:
             with get_connection() as connection:
+                self._ensure_estimated_delivery_date_schema(connection)
                 with get_cursor(connection) as cursor:
                     cursor.execute(
                         query,
@@ -133,6 +153,7 @@ class MySQLShipmentRepository(ShipmentRepository):
             "FROM shipments WHERE id = %s"
         )
 
+        self._ensure_estimated_delivery_date_schema(connection)
         with get_cursor(connection, dictionary=True) as cursor:
             cursor.execute(query, (shipment_id,))
             row = cursor.fetchone()
@@ -161,6 +182,59 @@ class MySQLShipmentRepository(ShipmentRepository):
             shipment_count=int(row["shipment_count"]),
             status=cast(str, row["status"]),
         )
+
+    def _ensure_estimated_delivery_date_schema(
+        self,
+        connection: PooledMySQLConnection,
+    ) -> None:
+        if self._estimated_delivery_date_schema_verified:
+            return
+
+        if self._has_estimated_delivery_date_column(connection):
+            self._estimated_delivery_date_schema_verified = True
+            return
+
+        logger.warning(
+            "Legacy shipments schema detected. Attempting to add %s.",
+            self.ESTIMATED_DELIVERY_DATE_COLUMN_NAME,
+        )
+        try:
+            with get_cursor(connection) as cursor:
+                cursor.execute(self.ESTIMATED_DELIVERY_DATE_REMEDIATION_SQL)
+        except Error as exc:
+            if exc.errno == errorcode.ER_DUP_FIELDNAME:
+                if self._has_estimated_delivery_date_column(connection):
+                    self._estimated_delivery_date_schema_verified = True
+                    return
+
+            logger.warning(
+                "Shipment schema compatibility repair failed: %s",
+                exc,
+            )
+            raise ShipmentSchemaCompatibilityError(
+                detail=(
+                    "No fue posible agregar automaticamente la columna "
+                    "estimated_delivery_date a shipments."
+                ),
+                remediation_sql=self.ESTIMATED_DELIVERY_DATE_REMEDIATION_SQL,
+            ) from exc
+
+        connection.commit()
+        self._estimated_delivery_date_schema_verified = True
+
+    def _has_estimated_delivery_date_column(
+        self,
+        connection: PooledMySQLConnection,
+    ) -> bool:
+        with get_cursor(connection, dictionary=True) as cursor:
+            cursor.execute(
+                self.ESTIMATED_DELIVERY_DATE_COMPATIBILITY_QUERY,
+                (
+                    self.SHIPMENTS_TABLE_NAME,
+                    self.ESTIMATED_DELIVERY_DATE_COLUMN_NAME,
+                ),
+            )
+            return cursor.fetchone() is not None
 
     @staticmethod
     def _raise_known_error(exc: Error) -> None:

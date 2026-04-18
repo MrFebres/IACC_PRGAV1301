@@ -15,6 +15,7 @@ from repositories import (
     ShipmentNotFoundError,
     ShipmentRecord,
     ShipmentRepository,
+    ShipmentSchemaCompatibilityError,
     ShipmentSummary,
 )
 from ui.widgets import ShipmentActions, ShipmentForm, ShipmentTable
@@ -200,6 +201,16 @@ class ShipmentManagementView(ttk.Frame):
         action_label: str,
         show_dialog: bool,
     ) -> None:
+        if isinstance(exc, ShipmentSchemaCompatibilityError):
+            self.status_feedback_var.set(exc.summary_message)
+            if show_dialog:
+                messagebox.showerror(
+                    message=str(exc),
+                    parent=self,
+                    title="Compatibilidad de esquema",
+                )
+            return
+
         if isinstance(exc, DatabaseConfigurationError):
             self.status_feedback_var.set(
                 "Falta configuracion de MySQL. Revisa MYSQL_DATABASE y MYSQL_USER en .env."

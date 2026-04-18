@@ -11,6 +11,7 @@ from repositories.shipment_repository import (
     ShipmentMutation,
     ShipmentNotFoundError,
     ShipmentRecord,
+    ShipmentSchemaCompatibilityError,
     ShipmentSummary,
 )
 from ui.views.shipment_management_view import ShipmentManagementView
@@ -212,6 +213,16 @@ def build_view(repository: FakeShipmentRepository) -> ShipmentManagementView:
     view.shipment_form = FakeShipmentForm()
     view.shipment_table = FakeShipmentTable()
     return view
+
+
+def build_schema_error() -> ShipmentSchemaCompatibilityError:
+    return ShipmentSchemaCompatibilityError(
+        detail="ALTER denied",
+        remediation_sql=(
+            "ALTER TABLE shipments ADD COLUMN estimated_delivery_date "
+            "DATE NULL DEFAULT NULL AFTER destination_city"
+        ),
+    )
 
 
 def test_initial_load_populates_table_on_first_render(
@@ -420,6 +431,20 @@ def test_on_generate_report_surfaces_missing_configuration_guidance(
         "error",
         "Configura MYSQL_DATABASE y MYSQL_USER en tu archivo .env antes de usar la gestion de envios.",
     )
+
+
+def test_initial_load_surfaces_schema_compatibility_guidance_without_dialog(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    schema_error = build_schema_error()
+    repository = FakeShipmentRepository(list_error=schema_error)
+    view = build_view(repository)
+
+    view._load_initial_shipments()
+
+    assert repository.list_calls == 1
+    assert view.status_feedback_var.get() == schema_error.summary_message
+    assert suppress_messageboxes == []
 
 
 def test_on_update_requires_selection_before_saving(
@@ -706,3 +731,34 @@ def test_on_reload_surfaces_missing_configuration_guidance(
         "error",
         "Configura MYSQL_DATABASE y MYSQL_USER en tu archivo .env antes de usar la gestion de envios.",
     )
+
+
+def test_on_reload_shows_schema_compatibility_guidance(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    schema_error = build_schema_error()
+    repository = FakeShipmentRepository(list_error=schema_error)
+    view = build_view(repository)
+
+    view._on_reload()
+
+    assert repository.list_calls == 1
+    assert view.status_feedback_var.get() == schema_error.summary_message
+    assert suppress_messageboxes[-1] == ("error", str(schema_error))
+
+
+def test_on_create_shows_schema_compatibility_guidance(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    schema_error = build_schema_error()
+    repository = FakeShipmentRepository(create_error=schema_error)
+    view = build_view(repository)
+
+    view.destination_city_var.set("Valparaiso")
+    view.origin_city_var.set("Santiago")
+    view.tracking_number_var.set("TRK-001")
+
+    view._on_create()
+
+    assert view.status_feedback_var.get() == schema_error.summary_message
+    assert suppress_messageboxes[-1] == ("error", str(schema_error))
