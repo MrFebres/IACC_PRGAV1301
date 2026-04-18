@@ -56,3 +56,6 @@ class ShipmentRepository(Protocol):
 
     def update_shipment(self, shipment_id: int, payload: ShipmentMutation) -> ShipmentRecord:
         ...
+
+    def delete_shipment(self, shipment_id: int) -> None:
+        ...

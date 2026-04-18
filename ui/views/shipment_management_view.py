@@ -29,7 +29,7 @@ class ShipmentManagementView(ttk.Frame):
     MAX_TRACKING_NUMBER_LENGTH: int = 32
     STATUS_CHOICES: tuple[tuple[str, str], ...] = (
         ("pendiente", "Pendiente"),
-        ("en_transito", "En transito"),
+        ("en_transito", "En tránsito"),
         ("entregado", "Entregado"),
     )
 
@@ -157,6 +157,7 @@ class ShipmentManagementView(ttk.Frame):
             content_frame,
             on_clear=self._on_clear,
             on_create=self._on_create,
+            on_delete=self._on_delete,
             on_generate_report=self._on_generate_report,
             on_reload=self._on_reload,
             on_update=self._on_update,
@@ -171,6 +172,7 @@ class ShipmentManagementView(ttk.Frame):
 
     def _enter_edit_mode(self, shipment: ShipmentRecord) -> None:
         self._selected_shipment_id = shipment.id
+        self.shipment_actions.set_delete_enabled(True)
         self.shipment_actions.set_update_enabled(True)
         self.status_feedback_var.set(
             f"Editando el envio {shipment.tracking_number}. Actualiza los datos y guarda los cambios."
@@ -178,6 +180,7 @@ class ShipmentManagementView(ttk.Frame):
 
     def _exit_edit_mode(self) -> None:
         self._selected_shipment_id = None
+        self.shipment_actions.set_delete_enabled(False)
         self.shipment_actions.set_update_enabled(False)
 
     def _format_datetime(self, value: datetime | None) -> str:
@@ -227,7 +230,7 @@ class ShipmentManagementView(ttk.Frame):
             )
             if show_dialog:
                 messagebox.showwarning(
-                    message="El envio seleccionado ya no existe. Recarga la lista antes de actualizar.",
+                    message="El envio seleccionado ya no existe. Recarga la lista antes de continuar.",
                     parent=self,
                     title="Envio no disponible",
                 )
@@ -296,6 +299,49 @@ class ShipmentManagementView(ttk.Frame):
             self._handle_action_error(
                 exc,
                 action_label="shipment creation",
+                show_dialog=True,
+            )
+
+    def _on_delete(self) -> None:
+        if self._selected_shipment_id is None:
+            self._show_validation_feedback(
+                "Selecciona un envio de la lista antes de eliminar."
+            )
+            return
+
+        if not messagebox.askokcancel(
+            message="Se eliminara el envio seleccionado de forma permanente. ¿Deseas continuar?",
+            parent=self,
+            title="Confirmar eliminacion",
+        ):
+            return
+
+        try:
+            self.repository.delete_shipment(self._selected_shipment_id)
+            if self._reload_shipments(show_dialog_on_error=True):
+                self._reset_form()
+                self.status_feedback_var.set(
+                    "Se elimino el envio seleccionado correctamente."
+                )
+                messagebox.showinfo(
+                    message="El envio fue eliminado y la lista se recargo correctamente.",
+                    parent=self,
+                    title="Envio eliminado",
+                )
+                return
+
+            self.status_feedback_var.set(
+                "El envio se elimino, pero no fue posible recargar la lista automaticamente."
+            )
+            messagebox.showwarning(
+                message="El envio fue eliminado, pero la lista no pudo recargarse. Intenta usar Recargar lista.",
+                parent=self,
+                title="Recarga pendiente",
+            )
+        except Exception as exc:
+            self._handle_action_error(
+                exc,
+                action_label="shipment delete",
                 show_dialog=True,
             )
 

@@ -26,12 +26,14 @@ class FakeCursor:
         fetchall_result: list[dict[str, object]] | None = None,
         fetchone_result: dict[str, object] | None = None,
         lastrowid: int = 0,
+        rowcount: int = 1,
     ) -> None:
         self.execute_calls: list[tuple[str, tuple[object, ...] | None]] = []
         self.execute_error = execute_error
         self.fetchall_result = fetchall_result or []
         self.fetchone_result = fetchone_result
         self.lastrowid = lastrowid
+        self.rowcount = rowcount
 
     def close(self) -> None:
         return None
@@ -310,6 +312,44 @@ def test_update_shipment_raises_not_found_when_row_is_missing(
 
     with pytest.raises(ShipmentNotFoundError):
         repository.update_shipment(404, payload)
+
+
+def test_delete_shipment_deletes_row_and_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    delete_cursor = FakeCursor(rowcount=1)
+
+    connection = patch_database(monkeypatch, cursors=[delete_cursor])
+
+    repository = MySQLShipmentRepository()
+    repository.delete_shipment(7)
+
+    assert connection.commit_calls == 1
+    assert delete_cursor.execute_calls == [
+        (
+            "DELETE FROM shipments WHERE id = %s",
+            (7,),
+        )
+    ]
+
+
+def test_delete_shipment_raises_not_found_when_row_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delete_cursor = FakeCursor(rowcount=0)
+
+    connection = patch_database(monkeypatch, cursors=[delete_cursor])
+
+    repository = MySQLShipmentRepository()
+
+    with pytest.raises(ShipmentNotFoundError):
+        repository.delete_shipment(404)
+
+    assert connection.commit_calls == 0
+    assert delete_cursor.execute_calls == [
+        (
+            "DELETE FROM shipments WHERE id = %s",
+            (404,),
+        )
+    ]
 
 
 def test_list_shipments_propagates_missing_database_configuration(

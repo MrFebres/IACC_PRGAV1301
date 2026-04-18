@@ -9,6 +9,7 @@ from database.connection import DatabaseConfigurationError
 from repositories.shipment_repository import (
     DuplicateTrackingNumberError,
     ShipmentMutation,
+    ShipmentNotFoundError,
     ShipmentRecord,
     ShipmentSummary,
 )
@@ -47,7 +48,11 @@ class FakeShipmentForm:
 
 class FakeShipmentActions:
     def __init__(self) -> None:
+        self.delete_enabled: bool = False
         self.update_enabled: bool = False
+
+    def set_delete_enabled(self, enabled: bool) -> None:
+        self.delete_enabled = enabled
 
     def set_update_enabled(self, enabled: bool) -> None:
         self.update_enabled = enabled
@@ -76,6 +81,7 @@ class FakeShipmentRepository:
         *,
         create_error: Exception | None = None,
         create_result: ShipmentRecord | None = None,
+        delete_error: Exception | None = None,
         list_error: Exception | None = None,
         list_result: tuple[ShipmentRecord, ...] = (),
         summarize_error: Exception | None = None,
@@ -86,6 +92,8 @@ class FakeShipmentRepository:
         self.create_calls: list[ShipmentMutation] = []
         self.create_error = create_error
         self.create_result = create_result
+        self.delete_calls: list[int] = []
+        self.delete_error = delete_error
         self.list_calls: int = 0
         self.list_error = list_error
         self.list_result = list_result
@@ -103,6 +111,11 @@ class FakeShipmentRepository:
         if self.create_result is None:
             raise AssertionError("create_result must be provided for successful creates")
         return self.create_result
+
+    def delete_shipment(self, shipment_id: int) -> None:
+        self.delete_calls.append(shipment_id)
+        if self.delete_error is not None:
+            raise self.delete_error
 
     def list_shipments(self) -> tuple[ShipmentRecord, ...]:
         self.list_calls += 1
@@ -148,6 +161,24 @@ def suppress_messageboxes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, st
         record("warning"),
     )
     return calls
+
+
+@pytest.fixture
+def delete_confirmation_dialog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[tuple[str, str]], list[bool]]:
+    calls: list[tuple[str, str]] = []
+    responses: list[bool] = [True]
+
+    def fake_askokcancel(*, message: str, title: str, **_kwargs: object) -> bool:
+        calls.append((title, message))
+        return responses[0]
+
+    monkeypatch.setattr(
+        "ui.views.shipment_management_view.messagebox.askokcancel",
+        fake_askokcancel,
+    )
+    return calls, responses
 
 
 def build_record(*, shipment_id: int = 1, tracking_number: str = "TRK-001") -> ShipmentRecord:
@@ -283,6 +314,7 @@ def test_table_selection_loads_form_and_enables_update(
     assert view.origin_city_var.get() == "Santiago"
     assert view.shipment_form.status_value == "Pendiente"
     assert view.tracking_number_var.get() == "TRK-777"
+    assert view.shipment_actions.delete_enabled is True
     assert view.shipment_actions.update_enabled is True
     assert suppress_messageboxes == []
 
@@ -315,6 +347,7 @@ def test_on_generate_report_shows_grouped_status_summary(
 ) -> None:
     repository = FakeShipmentRepository(
         summarize_result=(
+            ShipmentSummary(shipment_count=1, status="en_transito"),
             ShipmentSummary(shipment_count=2, status="pendiente"),
             ShipmentSummary(shipment_count=1, status="estado_desconocido"),
         )
@@ -327,7 +360,7 @@ def test_on_generate_report_shows_grouped_status_summary(
     assert view.status_feedback_var.get() == "Se genero el reporte de estados de envios."
     assert suppress_messageboxes[-1] == (
         "info",
-        "Resumen de envios por estado:\n- Pendiente: 2\n- Estado Desconocido: 1",
+        "Resumen de envios por estado:\n- En tránsito: 1\n- Pendiente: 2\n- Estado Desconocido: 1",
     )
 
 
@@ -434,7 +467,7 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     view.destination_city_var.set("Puerto Montt")
     view.estimated_delivery_date_var.set("2026-05-03")
     view.origin_city_var.set("Osorno")
-    view.status_var.set("En transito")
+    view.status_var.set("En tránsito")
     view.tracking_number_var.set("TRK-999")
 
     view._on_update()
@@ -458,12 +491,118 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     assert view.origin_city_var.get() == ""
     assert view.tracking_number_var.get() == ""
     assert view.shipment_form.status_value == "Pendiente"
+    assert view.shipment_actions.delete_enabled is False
     assert view.shipment_actions.update_enabled is False
     assert view.shipment_table.selection_cleared is True
     assert view.status_feedback_var.get() == "Se actualizo el envio TRK-999 correctamente."
     assert suppress_messageboxes[-1] == (
         "info",
         "El envio fue actualizado y la lista se recargo correctamente.",
+    )
+
+
+def test_on_delete_returns_when_dialog_is_cancelled(
+    delete_confirmation_dialog: tuple[list[tuple[str, str]], list[bool]],
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository()
+    view = build_view(repository)
+    selected_record = build_record(shipment_id=9, tracking_number="TRK-009")
+
+    view._shipments_by_id = {9: selected_record}
+    view.shipment_table.selected_shipment_id = 9
+    view._load_shipment_into_form(selected_record)
+    view._enter_edit_mode(selected_record)
+    confirmation_calls, responses = delete_confirmation_dialog
+    responses[0] = False
+
+    view._on_delete()
+
+    assert repository.delete_calls == []
+    assert repository.list_calls == 0
+    assert view._selected_shipment_id == 9
+    assert view.shipment_actions.delete_enabled is True
+    assert confirmation_calls == [
+        (
+            "Confirmar eliminacion",
+            "Se eliminara el envio seleccionado de forma permanente. ¿Deseas continuar?",
+        )
+    ]
+    assert suppress_messageboxes == []
+
+
+def test_on_delete_persists_refreshes_table_and_resets_form(
+    delete_confirmation_dialog: tuple[list[tuple[str, str]], list[bool]],
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(list_result=())
+    view = build_view(repository)
+    selected_record = build_record(shipment_id=5, tracking_number="TRK-005")
+
+    view._shipments_by_id = {5: selected_record}
+    view.shipment_table.selected_shipment_id = 5
+    view._load_shipment_into_form(selected_record)
+    view._enter_edit_mode(selected_record)
+
+    view._on_delete()
+
+    assert delete_confirmation_dialog[0] == [
+        (
+            "Confirmar eliminacion",
+            "Se eliminara el envio seleccionado de forma permanente. ¿Deseas continuar?",
+        )
+    ]
+    assert repository.delete_calls == [5]
+    assert repository.list_calls == 1
+    assert view._selected_shipment_id is None
+    assert view.destination_city_var.get() == ""
+    assert view.estimated_delivery_date_var.get() == ""
+    assert view.origin_city_var.get() == ""
+    assert view.tracking_number_var.get() == ""
+    assert view.shipment_form.status_value == "Pendiente"
+    assert view.shipment_actions.delete_enabled is False
+    assert view.shipment_actions.update_enabled is False
+    assert view.shipment_table.selection_cleared is True
+    assert view.status_feedback_var.get() == "Se elimino el envio seleccionado correctamente."
+    assert suppress_messageboxes[-1] == (
+        "info",
+        "El envio fue eliminado y la lista se recargo correctamente.",
+    )
+
+
+def test_on_delete_shows_controlled_not_found_error(
+    delete_confirmation_dialog: tuple[list[tuple[str, str]], list[bool]],
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        delete_error=ShipmentNotFoundError("shipment missing"),
+    )
+    view = build_view(repository)
+    selected_record = build_record(shipment_id=11, tracking_number="TRK-011")
+
+    view._shipments_by_id = {11: selected_record}
+    view.shipment_table.selected_shipment_id = 11
+    view._load_shipment_into_form(selected_record)
+    view._enter_edit_mode(selected_record)
+
+    view._on_delete()
+
+    assert delete_confirmation_dialog[0] == [
+        (
+            "Confirmar eliminacion",
+            "Se eliminara el envio seleccionado de forma permanente. ¿Deseas continuar?",
+        )
+    ]
+    assert repository.delete_calls == [11]
+    assert repository.list_calls == 0
+    assert view._selected_shipment_id == 11
+    assert view.shipment_actions.delete_enabled is True
+    assert view.status_feedback_var.get() == (
+        "El envio seleccionado ya no existe. Recarga la lista e intenta nuevamente."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "El envio seleccionado ya no existe. Recarga la lista antes de continuar.",
     )
 
 

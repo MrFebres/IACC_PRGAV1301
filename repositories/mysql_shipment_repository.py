@@ -105,6 +105,23 @@ class MySQLShipmentRepository(ShipmentRepository):
             logger.exception("Unexpected database error updating shipment %s", shipment_id)
             raise
 
+    def delete_shipment(self, shipment_id: int) -> None:
+        query: str = "DELETE FROM shipments WHERE id = %s"
+
+        try:
+            with get_connection() as connection:
+                with get_cursor(connection) as cursor:
+                    cursor.execute(query, (shipment_id,))
+                    if cursor.rowcount == 0:
+                        raise ShipmentNotFoundError(
+                            f"No shipment exists with id {shipment_id}."
+                        )
+                connection.commit()
+        except Error as exc:
+            self._raise_known_error(exc)
+            logger.exception("Unexpected database error deleting shipment %s", shipment_id)
+            raise
+
     def _fetch_shipment_by_id(
         self,
         connection: PooledMySQLConnection,
