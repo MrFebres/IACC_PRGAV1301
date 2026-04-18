@@ -1,0 +1,2 @@
+-- No reference data is required for the initial logistics scaffold.
+-- Keep this file tracked so future iterations can add seed data without changing the SQL surface.
