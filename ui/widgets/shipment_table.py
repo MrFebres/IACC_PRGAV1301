@@ -19,7 +19,7 @@ class ShipmentTable(ttk.LabelFrame):
         self,
         parent: ttk.Frame,
         *,
-        on_select: Callable[[tk.Event[tk.Misc]], None],
+        on_select: Callable[[tk.Event[tk.Misc]], None] | None = None,
     ) -> None:
         super().__init__(parent, padding=12, text="Envios registrados")
         self.columnconfigure(0, weight=1)
@@ -29,7 +29,7 @@ class ShipmentTable(ttk.LabelFrame):
 
     def _create_widgets(
         self,
-        on_select: Callable[[tk.Event[tk.Misc]], None],
+        on_select: Callable[[tk.Event[tk.Misc]], None] | None,
     ) -> None:
         self.shipments_tree = ttk.Treeview(
             self,
@@ -48,7 +48,8 @@ class ShipmentTable(ttk.LabelFrame):
         self.shipments_tree.column("status", minwidth=110, width=120)
         self.shipments_tree.column("tracking_number", minwidth=140, width=170)
         self.shipments_tree.column("updated_at", minwidth=120, width=130)
-        self.shipments_tree.bind("<<TreeviewSelect>>", on_select)
+        if on_select is not None:
+            self.shipments_tree.bind("<<TreeviewSelect>>", on_select)
         self.shipments_tree.grid(column=0, row=0, sticky=tk.NSEW)
 
         scrollbar = ttk.Scrollbar(

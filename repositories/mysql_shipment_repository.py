@@ -6,6 +6,7 @@ import logging
 from typing import cast
 
 from mysql.connector import Error, errorcode
+from mysql.connector.pooling import PooledMySQLConnection
 
 from database.connection import get_connection, get_cursor
 from repositories.shipment_repository import (
@@ -54,10 +55,14 @@ class MySQLShipmentRepository(ShipmentRepository):
             "FROM shipments ORDER BY created_at DESC, id DESC"
         )
 
-        with get_connection() as connection, get_cursor(connection, dictionary=True) as cursor:
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            return tuple(self._map_shipment_record(row) for row in rows)
+        try:
+            with get_connection() as connection, get_cursor(connection, dictionary=True) as cursor:
+                cursor.execute(query)
+                rows = cursor.fetchall()
+                return tuple(self._map_shipment_record(row) for row in rows)
+        except Error:
+            logger.exception("Unexpected database error listing shipments")
+            raise
 
     def summarize_shipments(self) -> tuple[ShipmentSummary, ...]:
         query: str = (
@@ -96,7 +101,11 @@ class MySQLShipmentRepository(ShipmentRepository):
             logger.exception("Unexpected database error updating shipment %s", shipment_id)
             raise
 
-    def _fetch_shipment_by_id(self, connection: object, shipment_id: int) -> ShipmentRecord:
+    def _fetch_shipment_by_id(
+        self,
+        connection: PooledMySQLConnection,
+        shipment_id: int,
+    ) -> ShipmentRecord:
         query: str = (
             "SELECT created_at, destination_city, id, origin_city, status, tracking_number, updated_at "
             "FROM shipments WHERE id = %s"
