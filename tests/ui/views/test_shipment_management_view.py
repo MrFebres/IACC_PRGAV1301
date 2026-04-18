@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from mysql.connector.errors import OperationalError
@@ -9,7 +9,9 @@ from database.connection import DatabaseConfigurationError
 from repositories.shipment_repository import (
     DuplicateTrackingNumberError,
     ShipmentMutation,
+    ShipmentNotFoundError,
     ShipmentRecord,
+    ShipmentSchemaCompatibilityError,
     ShipmentSummary,
 )
 from ui.views.shipment_management_view import ShipmentManagementView
@@ -47,7 +49,11 @@ class FakeShipmentForm:
 
 class FakeShipmentActions:
     def __init__(self) -> None:
+        self.delete_enabled: bool = False
         self.update_enabled: bool = False
+
+    def set_delete_enabled(self, enabled: bool) -> None:
+        self.delete_enabled = enabled
 
     def set_update_enabled(self, enabled: bool) -> None:
         self.update_enabled = enabled
@@ -76,17 +82,25 @@ class FakeShipmentRepository:
         *,
         create_error: Exception | None = None,
         create_result: ShipmentRecord | None = None,
+        delete_error: Exception | None = None,
         list_error: Exception | None = None,
         list_result: tuple[ShipmentRecord, ...] = (),
+        summarize_error: Exception | None = None,
+        summarize_result: tuple[ShipmentSummary, ...] = (),
         update_error: Exception | None = None,
         update_result: ShipmentRecord | None = None,
     ) -> None:
         self.create_calls: list[ShipmentMutation] = []
         self.create_error = create_error
         self.create_result = create_result
+        self.delete_calls: list[int] = []
+        self.delete_error = delete_error
         self.list_calls: int = 0
         self.list_error = list_error
         self.list_result = list_result
+        self.summarize_calls: int = 0
+        self.summarize_error = summarize_error
+        self.summarize_result = summarize_result
         self.update_calls: list[tuple[int, ShipmentMutation]] = []
         self.update_error = update_error
         self.update_result = update_result
@@ -99,6 +113,11 @@ class FakeShipmentRepository:
             raise AssertionError("create_result must be provided for successful creates")
         return self.create_result
 
+    def delete_shipment(self, shipment_id: int) -> None:
+        self.delete_calls.append(shipment_id)
+        if self.delete_error is not None:
+            raise self.delete_error
+
     def list_shipments(self) -> tuple[ShipmentRecord, ...]:
         self.list_calls += 1
         if self.list_error is not None:
@@ -106,7 +125,10 @@ class FakeShipmentRepository:
         return self.list_result
 
     def summarize_shipments(self) -> tuple[ShipmentSummary, ...]:
-        raise AssertionError("Summary is out of scope for this slice")
+        self.summarize_calls += 1
+        if self.summarize_error is not None:
+            raise self.summarize_error
+        return self.summarize_result
 
     def update_shipment(self, shipment_id: int, payload: ShipmentMutation) -> ShipmentRecord:
         self.update_calls.append((shipment_id, payload))
@@ -142,11 +164,30 @@ def suppress_messageboxes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, st
     return calls
 
 
+@pytest.fixture
+def delete_confirmation_dialog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[tuple[str, str]], list[bool]]:
+    calls: list[tuple[str, str]] = []
+    responses: list[bool] = [True]
+
+    def fake_askokcancel(*, message: str, title: str, **_kwargs: object) -> bool:
+        calls.append((title, message))
+        return responses[0]
+
+    monkeypatch.setattr(
+        "ui.views.shipment_management_view.messagebox.askokcancel",
+        fake_askokcancel,
+    )
+    return calls, responses
+
+
 def build_record(*, shipment_id: int = 1, tracking_number: str = "TRK-001") -> ShipmentRecord:
     timestamp = datetime(2026, 4, 18, 11, 0)
     return ShipmentRecord(
         created_at=timestamp,
         destination_city="Valparaiso",
+        estimated_delivery_date=date(2026, 5, 1),
         id=shipment_id,
         origin_city="Santiago",
         status="pendiente",
@@ -159,6 +200,7 @@ def build_view(repository: FakeShipmentRepository) -> ShipmentManagementView:
     view = ShipmentManagementView.__new__(ShipmentManagementView)
     view.repository = repository
     view.destination_city_var = FakeVar()
+    view.estimated_delivery_date_var = FakeVar()
     view.origin_city_var = FakeVar()
     view.status_feedback_var = FakeVar(
         "Completa el formulario y usa Recargar lista para consultar MySQL."
@@ -173,6 +215,16 @@ def build_view(repository: FakeShipmentRepository) -> ShipmentManagementView:
     return view
 
 
+def build_schema_error() -> ShipmentSchemaCompatibilityError:
+    return ShipmentSchemaCompatibilityError(
+        detail="ALTER denied",
+        remediation_sql=(
+            "ALTER TABLE shipments ADD COLUMN estimated_delivery_date "
+            "DATE NULL DEFAULT NULL AFTER destination_city"
+        ),
+    )
+
+
 def test_initial_load_populates_table_on_first_render(
     suppress_messageboxes: list[tuple[str, str]],
 ) -> None:
@@ -183,6 +235,7 @@ def test_initial_load_populates_table_on_first_render(
 
     assert repository.list_calls == 1
     assert len(view.shipment_table.rows) == 1
+    assert view.shipment_table.rows[0][1][2] == "2026-05-01"
     assert suppress_messageboxes == []
 
 
@@ -238,6 +291,7 @@ def test_on_create_persists_and_refreshes_table(
     assert repository.create_calls == [
         ShipmentMutation(
             destination_city="Valparaiso",
+            estimated_delivery_date=None,
             origin_city="Santiago",
             status="pendiente",
             tracking_number="TRK-777",
@@ -267,10 +321,129 @@ def test_table_selection_loads_form_and_enables_update(
 
     assert view._selected_shipment_id == 7
     assert view.destination_city_var.get() == "Valparaiso"
+    assert view.estimated_delivery_date_var.get() == "2026-05-01"
     assert view.origin_city_var.get() == "Santiago"
     assert view.shipment_form.status_value == "Pendiente"
     assert view.tracking_number_var.get() == "TRK-777"
+    assert view.shipment_actions.delete_enabled is True
     assert view.shipment_actions.update_enabled is True
+    assert suppress_messageboxes == []
+
+
+def test_on_create_blocks_invalid_estimated_delivery_date(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository()
+    view = build_view(repository)
+
+    view.destination_city_var.set("Valparaiso")
+    view.estimated_delivery_date_var.set("abc")
+    view.origin_city_var.set("Santiago")
+    view.tracking_number_var.set("TRK-010")
+
+    view._on_create()
+
+    assert repository.create_calls == []
+    assert view.status_feedback_var.get() == (
+        "Fecha de entrega prevista debe usar el formato YYYY-MM-DD."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "Fecha de entrega prevista debe usar el formato YYYY-MM-DD.",
+    )
+
+
+def test_on_generate_report_shows_grouped_status_summary(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        summarize_result=(
+            ShipmentSummary(shipment_count=1, status="en_transito"),
+            ShipmentSummary(shipment_count=2, status="pendiente"),
+            ShipmentSummary(shipment_count=1, status="estado_desconocido"),
+        )
+    )
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == "Se genero el reporte de estados de envios."
+    assert suppress_messageboxes[-1] == (
+        "info",
+        "Resumen de envios por estado:\n- En tránsito: 1\n- Pendiente: 2\n- Estado Desconocido: 1",
+    )
+
+
+def test_on_generate_report_warns_when_summary_is_empty(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(summarize_result=())
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == (
+        "No hay datos para generar el reporte de estados. Crea envios o recarga la lista."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "No hay envios registrados para resumir por estado.",
+    )
+
+
+def test_on_generate_report_surfaces_database_failures(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        summarize_error=OperationalError(msg="MySQL unavailable", errno=2003),
+    )
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == (
+        "No fue posible completar la operacion en MySQL. Verifica la conexion y vuelve a intentar."
+    )
+    assert suppress_messageboxes[-1] == (
+        "error",
+        "No fue posible conectar con MySQL o completar la operacion solicitada.",
+    )
+
+
+def test_on_generate_report_surfaces_missing_configuration_guidance(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        summarize_error=DatabaseConfigurationError("missing settings"),
+    )
+    view = build_view(repository)
+
+    view._on_generate_report()
+
+    assert repository.summarize_calls == 1
+    assert view.status_feedback_var.get() == (
+        "Falta configuracion de MySQL. Revisa MYSQL_DATABASE y MYSQL_USER en .env."
+    )
+    assert suppress_messageboxes[-1] == (
+        "error",
+        "Configura MYSQL_DATABASE y MYSQL_USER en tu archivo .env antes de usar la gestion de envios.",
+    )
+
+
+def test_initial_load_surfaces_schema_compatibility_guidance_without_dialog(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    schema_error = build_schema_error()
+    repository = FakeShipmentRepository(list_error=schema_error)
+    view = build_view(repository)
+
+    view._load_initial_shipments()
+
+    assert repository.list_calls == 1
+    assert view.status_feedback_var.get() == schema_error.summary_message
     assert suppress_messageboxes == []
 
 
@@ -299,6 +472,7 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     updated_record = ShipmentRecord(
         created_at=existing_record.created_at,
         destination_city="Puerto Montt",
+        estimated_delivery_date=date(2026, 5, 3),
         id=5,
         origin_city="Osorno",
         status="en_transito",
@@ -316,8 +490,9 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     view._shipments_by_id = {5: existing_record}
     view._on_table_select()
     view.destination_city_var.set("Puerto Montt")
+    view.estimated_delivery_date_var.set("2026-05-03")
     view.origin_city_var.set("Osorno")
-    view.status_var.set("En transito")
+    view.status_var.set("En tránsito")
     view.tracking_number_var.set("TRK-999")
 
     view._on_update()
@@ -327,6 +502,7 @@ def test_on_update_persists_refreshes_table_and_resets_form(
             5,
             ShipmentMutation(
                 destination_city="Puerto Montt",
+                estimated_delivery_date=date(2026, 5, 3),
                 origin_city="Osorno",
                 status="en_transito",
                 tracking_number="TRK-999",
@@ -336,15 +512,122 @@ def test_on_update_persists_refreshes_table_and_resets_form(
     assert repository.list_calls == 2
     assert view._selected_shipment_id is None
     assert view.destination_city_var.get() == ""
+    assert view.estimated_delivery_date_var.get() == ""
     assert view.origin_city_var.get() == ""
     assert view.tracking_number_var.get() == ""
     assert view.shipment_form.status_value == "Pendiente"
+    assert view.shipment_actions.delete_enabled is False
     assert view.shipment_actions.update_enabled is False
     assert view.shipment_table.selection_cleared is True
     assert view.status_feedback_var.get() == "Se actualizo el envio TRK-999 correctamente."
     assert suppress_messageboxes[-1] == (
         "info",
         "El envio fue actualizado y la lista se recargo correctamente.",
+    )
+
+
+def test_on_delete_returns_when_dialog_is_cancelled(
+    delete_confirmation_dialog: tuple[list[tuple[str, str]], list[bool]],
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository()
+    view = build_view(repository)
+    selected_record = build_record(shipment_id=9, tracking_number="TRK-009")
+
+    view._shipments_by_id = {9: selected_record}
+    view.shipment_table.selected_shipment_id = 9
+    view._load_shipment_into_form(selected_record)
+    view._enter_edit_mode(selected_record)
+    confirmation_calls, responses = delete_confirmation_dialog
+    responses[0] = False
+
+    view._on_delete()
+
+    assert repository.delete_calls == []
+    assert repository.list_calls == 0
+    assert view._selected_shipment_id == 9
+    assert view.shipment_actions.delete_enabled is True
+    assert confirmation_calls == [
+        (
+            "Confirmar eliminacion",
+            "Se eliminara el envio seleccionado de forma permanente. ¿Deseas continuar?",
+        )
+    ]
+    assert suppress_messageboxes == []
+
+
+def test_on_delete_persists_refreshes_table_and_resets_form(
+    delete_confirmation_dialog: tuple[list[tuple[str, str]], list[bool]],
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(list_result=())
+    view = build_view(repository)
+    selected_record = build_record(shipment_id=5, tracking_number="TRK-005")
+
+    view._shipments_by_id = {5: selected_record}
+    view.shipment_table.selected_shipment_id = 5
+    view._load_shipment_into_form(selected_record)
+    view._enter_edit_mode(selected_record)
+
+    view._on_delete()
+
+    assert delete_confirmation_dialog[0] == [
+        (
+            "Confirmar eliminacion",
+            "Se eliminara el envio seleccionado de forma permanente. ¿Deseas continuar?",
+        )
+    ]
+    assert repository.delete_calls == [5]
+    assert repository.list_calls == 1
+    assert view._selected_shipment_id is None
+    assert view.destination_city_var.get() == ""
+    assert view.estimated_delivery_date_var.get() == ""
+    assert view.origin_city_var.get() == ""
+    assert view.tracking_number_var.get() == ""
+    assert view.shipment_form.status_value == "Pendiente"
+    assert view.shipment_actions.delete_enabled is False
+    assert view.shipment_actions.update_enabled is False
+    assert view.shipment_table.selection_cleared is True
+    assert view.status_feedback_var.get() == "Se elimino el envio seleccionado correctamente."
+    assert suppress_messageboxes[-1] == (
+        "info",
+        "El envio fue eliminado y la lista se recargo correctamente.",
+    )
+
+
+def test_on_delete_shows_controlled_not_found_error(
+    delete_confirmation_dialog: tuple[list[tuple[str, str]], list[bool]],
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    repository = FakeShipmentRepository(
+        delete_error=ShipmentNotFoundError("shipment missing"),
+    )
+    view = build_view(repository)
+    selected_record = build_record(shipment_id=11, tracking_number="TRK-011")
+
+    view._shipments_by_id = {11: selected_record}
+    view.shipment_table.selected_shipment_id = 11
+    view._load_shipment_into_form(selected_record)
+    view._enter_edit_mode(selected_record)
+
+    view._on_delete()
+
+    assert delete_confirmation_dialog[0] == [
+        (
+            "Confirmar eliminacion",
+            "Se eliminara el envio seleccionado de forma permanente. ¿Deseas continuar?",
+        )
+    ]
+    assert repository.delete_calls == [11]
+    assert repository.list_calls == 0
+    assert view._selected_shipment_id == 11
+    assert view.shipment_actions.delete_enabled is True
+    assert view.status_feedback_var.get() == (
+        "El envio seleccionado ya no existe. Recarga la lista e intenta nuevamente."
+    )
+    assert suppress_messageboxes[-1] == (
+        "warning",
+        "El envio seleccionado ya no existe. Recarga la lista antes de continuar.",
     )
 
 
@@ -372,6 +655,7 @@ def test_on_update_shows_controlled_duplicate_error(
             3,
             ShipmentMutation(
                 destination_city="Valparaiso",
+                estimated_delivery_date=date(2026, 5, 1),
                 origin_city="Santiago",
                 status="pendiente",
                 tracking_number="TRK-001",
@@ -447,3 +731,34 @@ def test_on_reload_surfaces_missing_configuration_guidance(
         "error",
         "Configura MYSQL_DATABASE y MYSQL_USER en tu archivo .env antes de usar la gestion de envios.",
     )
+
+
+def test_on_reload_shows_schema_compatibility_guidance(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    schema_error = build_schema_error()
+    repository = FakeShipmentRepository(list_error=schema_error)
+    view = build_view(repository)
+
+    view._on_reload()
+
+    assert repository.list_calls == 1
+    assert view.status_feedback_var.get() == schema_error.summary_message
+    assert suppress_messageboxes[-1] == ("error", str(schema_error))
+
+
+def test_on_create_shows_schema_compatibility_guidance(
+    suppress_messageboxes: list[tuple[str, str]],
+) -> None:
+    schema_error = build_schema_error()
+    repository = FakeShipmentRepository(create_error=schema_error)
+    view = build_view(repository)
+
+    view.destination_city_var.set("Valparaiso")
+    view.origin_city_var.set("Santiago")
+    view.tracking_number_var.set("TRK-001")
+
+    view._on_create()
+
+    assert view.status_feedback_var.get() == schema_error.summary_message
+    assert suppress_messageboxes[-1] == ("error", str(schema_error))

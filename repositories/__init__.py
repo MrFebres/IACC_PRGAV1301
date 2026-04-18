@@ -6,6 +6,7 @@ from repositories.shipment_repository import (
     ShipmentRecord,
     ShipmentRepository,
     ShipmentRepositoryError,
+    ShipmentSchemaCompatibilityError,
     ShipmentSummary,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "ShipmentRecord",
     "ShipmentRepository",
     "ShipmentRepositoryError",
+    "ShipmentSchemaCompatibilityError",
     "ShipmentSummary",
 ]
