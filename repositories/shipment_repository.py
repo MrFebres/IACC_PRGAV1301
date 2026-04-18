@@ -5,6 +5,18 @@ from datetime import datetime
 from typing import Protocol
 
 
+class ShipmentRepositoryError(RuntimeError):
+    """Base error for shipment repository operations."""
+
+
+class DuplicateTrackingNumberError(ShipmentRepositoryError):
+    """Raised when a tracking number already exists."""
+
+
+class ShipmentNotFoundError(ShipmentRepositoryError):
+    """Raised when a shipment does not exist."""
+
+
 @dataclass(frozen=True)
 class ShipmentMutation:
     destination_city: str
@@ -40,5 +52,5 @@ class ShipmentRepository(Protocol):
     def summarize_shipments(self) -> tuple[ShipmentSummary, ...]:
         ...
 
-    def update_shipment_status(self, shipment_id: int, status: str) -> ShipmentRecord:
+    def update_shipment(self, shipment_id: int, payload: ShipmentMutation) -> ShipmentRecord:
         ...
